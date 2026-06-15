@@ -1,0 +1,17 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+
+# Ortam değişkenleri (sırlar) — .env.example HARİÇ
+.env*
+!.env.example
+
+# Firebase servis hesabı anahtarları — ASLA commit'lenmemeli
+*service-account*.json
+*serviceAccount*.json
+*-firebase-adminsdk-*.json
+firebase-debug.log
+.firebase/

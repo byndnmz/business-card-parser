@@ -1,0 +1,7 @@
+# Tüm metin dosyalarında tutarlı LF satır sonu (CRLF gürültüsünü önler).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary

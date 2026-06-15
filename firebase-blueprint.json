@@ -1,0 +1,195 @@
+{
+  "entities": {
+    "user": {
+      "title": "User",
+      "description": "System users with access levels",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "full_name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "operator", "auditor", "user"] },
+        "mfa_enabled": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "full_name", "email", "role", "status"]
+    },
+    "business_card": {
+      "title": "BusinessCard",
+      "description": "Processed business card images and metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "owner_user_id": { "type": "string" },
+        "image_url": { "type": "string" },
+        "original_file_url": { "type": "string" },
+        "processing_status": { "type": "string", "enum": ["queued", "processing", "pending_verification", "success", "failed", "manual_review"] },
+        "confidence_score": { "type": "number" },
+        "source_type": { "type": "string", "enum": ["web", "ios", "android"] },
+        "batch_id": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "owner_user_id", "processing_status", "confidence_score"]
+    },
+    "business_card_fields": {
+      "title": "BusinessCardField",
+      "description": "Detected visual fields with bounding boxes for image segmentation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "business_card_id": { "type": "string" },
+        "field_name": { "type": "string" },
+        "field_value": { "type": "string" },
+        "confidence_score": { "type": "number" },
+        "bounding_box_x": { "type": "number" },
+        "bounding_box_y": { "type": "number" },
+        "bounding_box_width": { "type": "number" },
+        "bounding_box_height": { "type": "number" },
+        "is_verified": { "type": "boolean" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "business_card_id", "field_name", "field_value"]
+    },
+    "contact": {
+      "title": "Contact",
+      "description": "Durable verified contact info extracted from the cards",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "business_card_id": { "type": "string" },
+        "first_name": { "type": "string" },
+        "last_name": { "type": "string" },
+        "full_name": { "type": "string" },
+        "title": { "type": "string" },
+        "company": { "type": "string" },
+        "department": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "mobile_phone": { "type": "string" },
+        "website": { "type": "string" },
+        "address": { "type": "string" },
+        "city": { "type": "string" },
+        "country": { "type": "string" },
+        "linkedin": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "business_card_id", "full_name"]
+    },
+    "batch": {
+      "title": "Batch",
+      "description": "Bulk uploads track identifier",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "created_by": { "type": "string" },
+        "total_files": { "type": "integer" },
+        "processed_files": { "type": "integer" },
+        "failed_files": { "type": "integer" },
+        "status": { "type": "string", "enum": ["queued", "processing", "completed"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "completed_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "created_by", "total_files", "processed_files", "failed_files", "status"]
+    },
+    "export": {
+      "title": "ExportLog",
+      "description": "Traceability log of data export actions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "created_by": { "type": "string" },
+        "export_type": { "type": "string" },
+        "file_url": { "type": "string" },
+        "record_count": { "type": "integer" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "created_by", "export_type", "record_count"]
+    },
+    "audit_log": {
+      "title": "AuditLog",
+      "description": "Unmodifiable system activity log for compliance audit trails",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "user_id": { "type": "string" },
+        "action": { "type": "string" },
+        "entity_type": { "type": "string" },
+        "entity_id": { "type": "string" },
+        "old_value": { "type": "string" },
+        "new_value": { "type": "string" },
+        "ip_address": { "type": "string" },
+        "user_agent": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "user_id", "action", "created_at"]
+    },
+    "tag": {
+      "title": "Tag",
+      "description": "Corporate tags assigned to contact intelligence",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "color": { "type": "string" },
+        "created_by": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "created_by"]
+    },
+    "contact_tag": {
+      "title": "ContactTag",
+      "description": "Junction table mapping tags to individual contact records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "contact_id": { "type": "string" },
+        "tag_id": { "type": "string" }
+      },
+      "required": ["id", "contact_id", "tag_id"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "user",
+      "description": "Users of the business intelligence network"
+    },
+    "/business_cards/{cardId}": {
+      "schema": "business_card",
+      "description": "Business card metadata and processing status records"
+    },
+    "/business_card_fields/{fieldId}": {
+      "schema": "business_card_fields",
+      "description": "Bounding box coordinates and localized string segmented items"
+    },
+    "/contacts/{contactId}": {
+      "schema": "contact",
+      "description": "The extracted contact intelligence profiles"
+    },
+    "/batches/{batchId}": {
+      "schema": "batch",
+      "description": "Job batches for queued multiple parallel card processing"
+    },
+    "/exports/{exportId}": {
+      "schema": "export",
+      "description": "Trace audit logs of exports made by secure personnel"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "audit_log",
+      "description": "Relational immutable security activity tracking log"
+    },
+    "/tags/{tagId}": {
+      "schema": "tag",
+      "description": "System tags available for corporate labeling and classification"
+    },
+    "/contact_tags/{ctId}": {
+      "schema": "contact_tag",
+      "description": "Tags associated to a contact card mapping records"
+    }
+  }
+}

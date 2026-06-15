@@ -1,0 +1,51 @@
+# Firebase App Hosting yapılandırması (Node.js + SPA).
+# App Hosting otomatik olarak `npm ci` -> `npm run build` -> `npm start` çalıştırır.
+# Cloud Run üzerinde koştuğu için Admin SDK kimlik bilgisi (ADC) OTOMATİK gelir
+# (K_SERVICE algılanır) — ayrı service account JSON GEREKMEZ. Yalnızca:
+#   1) Firestore'u etkinleştir,
+#   2) App Hosting backend service account'una Firestore erişim rolü ver,
+#   3) Aşağıdaki sırları (SESSION_SECRET, GEMINI_API_KEY) Secret Manager'a ekle.
+
+runConfig:
+  minInstances: 0
+  maxInstances: 2
+  concurrency: 80
+  cpu: 1
+  memoryMiB: 512
+
+env:
+  # --- Genel ---
+  - variable: NODE_ENV
+    value: production
+    availability:
+      - RUNTIME
+
+  # Üretimde demo rol değiştirici KAPALI olmalı.
+  - variable: ALLOW_DEMO_ROLE_SWITCH
+    value: "false"
+    availability:
+      - RUNTIME
+
+  - variable: OCR_PROVIDER
+    value: gemini
+    availability:
+      - RUNTIME
+
+  - variable: GEMINI_MODEL
+    value: gemini-2.5-flash
+    availability:
+      - RUNTIME
+
+  # --- Sırlar (Cloud Secret Manager) ---
+  # Önce oluştur:
+  #   firebase apphosting:secrets:set SESSION_SECRET
+  #   firebase apphosting:secrets:set GEMINI_API_KEY
+  - variable: SESSION_SECRET
+    secret: SESSION_SECRET
+    availability:
+      - RUNTIME
+
+  - variable: GEMINI_API_KEY
+    secret: GEMINI_API_KEY
+    availability:
+      - RUNTIME

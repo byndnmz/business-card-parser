@@ -1,5 +1,50 @@
 # Yayına Alma (Deployment) — GitHub + Firebase
 
+## ⭐ SENİN YOLUN: App Hosting + yeni Firebase projesi + Public repo
+
+Aşağıdaki komutları **kendi makinende** sırayla çalıştır. `<...>` yerlerini doldur.
+
+```bash
+# 0) Araçlar (tek seferlik)
+npm i -g firebase-tools
+#  GitHub CLI:  https://cli.github.com  (veya manuel remote — aşağıda)
+
+# 1) Yeni Firebase projeni aç:  https://console.firebase.google.com  -> "Add project"
+#    Sonra Build -> Firestore Database -> "Create database" (Production mode).
+#    Varsayılan veritabanı "(default)" oluşur.
+
+# 2) firebase-applet-config.json'u KENDİ projenin web config'iyle değiştir:
+#    Firebase Console -> Project Settings -> "Your apps" -> Web app -> SDK config.
+#    Özellikle:  projectId  ve  "firestoreDatabaseId": "(default)"   yap.
+
+# 3) GitHub'a (public) yükle:
+gh repo create business-card-intelligence-platform --public --source=. --remote=origin --push
+#  gh yoksa:  GitHub'da boş public repo aç, sonra:
+#    git remote add origin https://github.com/<kullanıcı>/<repo>.git
+#    git push -u origin main
+
+# 4) Sırları Secret Manager'a ekle:
+firebase login
+firebase apphosting:secrets:set SESSION_SECRET   # aşağıdaki komutla üretip yapıştır
+firebase apphosting:secrets:set GEMINI_API_KEY   # Gemini API anahtarın (gerçek OCR için)
+#   SESSION_SECRET üret:
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+
+# 5) App Hosting backend'i oluştur ve GitHub repo'na bağla (interaktif):
+firebase apphosting:backends:create --project <SENIN_PROJE_ID>
+
+# 6) Firestore kurallarını yükle ve çalışma zamanı SA'sına Firestore rolü ver:
+firebase deploy --only firestore:rules --project <SENIN_PROJE_ID>
+#   IAM -> App Hosting service account -> "Cloud Datastore User" rolü ekle.
+```
+
+Bundan sonra her `git push` otomatik build + deploy tetikler. Doğrulama: §4.
+
+> **Gerçek OCR için** GEMINI_API_KEY şart (adım 4). Anahtar yokken sistem çalışır
+> ama kartları okumaz; etiketli mock veri döndürür.
+
+---
+
 ## 0. Önce mimariyi anla (önemli)
 
 Bu uygulama **statik bir site değil** — bir **Node.js (Express) sunucusu**dur

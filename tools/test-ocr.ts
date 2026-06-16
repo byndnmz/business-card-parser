@@ -10,6 +10,8 @@
  * anahtar gerekmez). Anahtar varsa gemini-2.5-flash görseli okur.
  * Açıkça seçmek için:  OCR_PROVIDER=tesseract npx tsx tools/test-ocr.ts <görsel>
  */
+import dotenv from "dotenv";
+dotenv.config({ path: [".env.local", ".env"] });
 import fs from "fs";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";

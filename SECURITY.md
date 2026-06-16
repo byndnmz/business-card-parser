@@ -25,7 +25,9 @@ savunma sanayii / kamu dağıtımı için kalan adımları açıklar.
 | Soft delete | `server.ts` → `DELETE /api/cards/:id` | İlişkili contact `is_deleted=true` ile izole edilir. |
 | Audit log | `server.ts` → `createAuditLog` | Giriş, OCR, yükleme, doğrulama, export, yetki değişikliği, engellenen erişim vb. |
 | Regex alan doğrulama | `src/server/parser.ts` → `validateAndScore` | E-posta/telefon/web/LinkedIn regex; başarısız alan güveni düşürülür ve uyarı eklenir. |
-| OCR sağlayıcı adaptörü | `parser.ts` → `getProvider` | `OCR_PROVIDER` ile değiştirilebilir (gemini/tesseract/vision/textract/custom). |
+| OCR sağlayıcı adaptörü | `parser.ts` → `getProvider` | `OCR_PROVIDER` ile değiştirilebilir (gemini/tesseract/vision/textract/custom). Anahtar yoksa otomatik **offline Tesseract** (mock değil). |
+| **Veri egemenliği (offline OCR)** | `ocr-tesseract.ts` (Tesseract WASM) | `OCR_PROVIDER=tesseract` ile görsel **sunucudan ÇIKMAZ** — savunma/PII için kritik. Gerçek kelime kutularından bounding box. |
+| **Görüntü kalite analizi + iyileştirme** | `image-preprocess.ts` (sharp) | Bulanıklık (Laplacian stdev)/ışık/çözünürlük ölçer; kötüyse oto-iyileştirir (gri tonlama, üst-örnekleme, normalize, keskinleştirme). Çok-PSM OCR → en yüksek güven seçilir. Düşük kalite → uyarı + manuel kontrol. |
 | Duplicate tespiti | `parser.ts` → `detectDuplicate` | E-posta / telefon / ad+şirket eşleşmesi → `manual_review`. |
 | **Gerçek TOTP MFA (RFC 6238)** | `src/server/totp.ts` + `/api/auth/mfa/enroll`,`/verify` | HMAC-SHA1, 6 hane, 30 sn, ±1 pencere. Google Authenticator uyumlu (resmi RFC test vektörleriyle doğrulandı). Sır base32 saklanır, **asla** client'a sızdırılmaz (`publicUser`). |
 | **Gerçek IdP — Firebase ID token** | `firestore-admin.ts` → `getAdminAuth` + `/api/auth/firebase` | Admin SDK `verifyIdToken` ile kriptografik doğrulama; kullanıcı en düşük yetkiyle provision edilir, oturum cookie'si verilir. |

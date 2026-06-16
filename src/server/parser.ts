@@ -14,6 +14,7 @@
  */
 
 import { GoogleGenAI, Type } from "@google/genai";
+import { TesseractProvider } from "./ocr-tesseract";
 
 // --- VERİ TİPLERİ -----------------------------------------------------------
 
@@ -66,6 +67,8 @@ export function normalizeEmail(raw: string): string {
  */
 export function normalizePhone(raw: string): string {
   let s = raw.replace(/[^\d+]/g, "");
+  // OCR kurtarma: '+' işareti sık '4' olarak okunur (ör. "+90" -> "490").
+  if (/^4(90\d{10})$/.test(s)) s = "+" + s.slice(1);
   if (s.startsWith("00")) s = "+" + s.slice(2);
   // 0XXXXXXXXXX (TR yerel) -> +90XXXXXXXXXX
   if (s.startsWith("0") && s.length === 11) s = "+90" + s.slice(1);
@@ -284,12 +287,16 @@ class UnconfiguredProvider implements OcrProvider {
  * Gemini dışındakiler yapılandırma gerektirir (adaptör genişletme noktaları).
  */
 export function getProvider(ai: GoogleGenAI | null): OcrProvider {
-  const choice = (process.env.OCR_PROVIDER || "gemini").toLowerCase();
+  // Açık seçim yoksa: Gemini anahtarı varsa gemini, YOKSA gerçek offline Tesseract
+  // (mock yerine) — sistem her durumda GERÇEK OCR yapar.
+  const explicit = process.env.OCR_PROVIDER?.toLowerCase();
+  const choice = explicit || (ai ? "gemini" : "tesseract");
   switch (choice) {
     case "gemini":
       return new GeminiProvider(ai);
     case "tesseract":
-      return new UnconfiguredProvider("tesseract");
+      // Self-hosted, API-key'siz, offline OCR (veri sunucudan çıkmaz).
+      return new TesseractProvider();
     case "google-vision":
       return new UnconfiguredProvider("google-vision");
     case "aws-textract":

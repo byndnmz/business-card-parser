@@ -17,10 +17,12 @@ React 19 + Vite (SPA)  ──HTTP──▶  Express API (server.ts)
         └── components/ (BoundingBox, VerifyForm, Batch, Export, Audit, Admin, QR, Mobile)
 ```
 
-- **OCR/Parser:** Sağlayıcı adaptör mimarisi (`OCR_PROVIDER`). Varsayılan Gemini
-  (`gemini-2.5-flash`, structured output + `responseSchema`). Sağlayıcı yoksa
-  açıkça etiketli `mock-fallback` döner. Çıkarılan alanlar regex ile doğrulanır,
-  telefon/e-posta/web normalize edilir, güven skoru yeniden hesaplanır.
+- **OCR/Parser:** Sağlayıcı adaptör mimarisi (`OCR_PROVIDER`). Gemini
+  (`gemini-2.5-flash`, structured output) **veya** anahtarsız/offline **Tesseract**
+  (`ocr-tesseract.ts` — görsel sunucudan çıkmaz, savunma için ideal). Anahtar yoksa
+  otomatik Tesseract'a düşer (mock değil). **Görüntü ön-işleme** (`image-preprocess.ts`,
+  sharp): kalite analizi (bulanık/loş/düşük çözünürlük) + oto-iyileştirme + çok-PSM
+  OCR. Çıkarılan alanlar regex ile doğrulanır/normalize edilir, gerçek bounding box üretilir.
 - **Güvenlik:** İmzalı httpOnly oturum cookie'si, per-request RBAC, rate limiting,
   magic-byte dosya doğrulama, input sanitizasyonu, sıkı CSP, **gerçek TOTP MFA**
   (RFC 6238), **Firebase IdP** ID-token doğrulama ve **kurcalama-kanıtı audit

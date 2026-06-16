@@ -672,9 +672,11 @@ app.get("/api/admin/dashboard", requireAuth, requireRole(["admin", "auditor"]), 
       dbConnected: persistence.enabled,
       persistenceSource: persistence.source,
       firewallActive: true,
-      ocrProvider: process.env.OCR_PROVIDER || "gemini",
-      ocrModel: process.env.GEMINI_MODEL || "gemini-2.5-flash",
-      geminiCognitiveEngine: ai ? "ONLINE_ACTIVE" : "OFFLINE_FALLBACK_SIMULATION"
+      ocrProvider: process.env.OCR_PROVIDER || (ai ? "gemini" : "tesseract"),
+      ocrModel: (process.env.OCR_PROVIDER === "tesseract" || !ai)
+        ? "tesseract (offline, self-hosted)"
+        : (process.env.GEMINI_MODEL || "gemini-2.5-flash"),
+      geminiCognitiveEngine: ai ? "ONLINE_ACTIVE" : "OFFLINE_TESSERACT_ACTIVE"
     }
   });
 });

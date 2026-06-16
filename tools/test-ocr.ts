@@ -6,8 +6,9 @@
  *   GEMINI_API_KEY=... npx tsx tools/test-ocr.ts <görsel-yolu>
  *   (örn:  GEMINI_API_KEY=xxx npx tsx tools/test-ocr.ts ./kart.jpg )
  *
- * GEMINI_API_KEY yoksa: sağlayıcı 'mock-fallback' döner (gerçek OCR ÇALIŞMAZ) ve
- * bu durum açıkça bildirilir. Anahtar varsa gemini-2.5-flash görseli gerçekten okur.
+ * GEMINI_API_KEY yoksa: otomatik olarak OFFLINE Tesseract kullanılır (gerçek OCR,
+ * anahtar gerekmez). Anahtar varsa gemini-2.5-flash görseli okur.
+ * Açıkça seçmek için:  OCR_PROVIDER=tesseract npx tsx tools/test-ocr.ts <görsel>
  */
 import fs from "fs";
 import path from "path";
@@ -20,8 +21,8 @@ async function main() {
   const hasKey = !!process.env.GEMINI_API_KEY;
 
   console.log("=== B-CIP OCR Test ===");
-  console.log("GEMINI_API_KEY:", hasKey ? "VAR (gerçek OCR aktif)" : "YOK (mock-fallback kullanılacak)");
-  console.log("OCR_PROVIDER  :", process.env.OCR_PROVIDER || "gemini");
+  console.log("GEMINI_API_KEY:", hasKey ? "VAR (gemini kullanılabilir)" : "YOK (offline Tesseract kullanılacak)");
+  console.log("OCR_PROVIDER  :", process.env.OCR_PROVIDER || (hasKey ? "gemini" : "tesseract"));
   console.log("Model         :", process.env.GEMINI_MODEL || "gemini-2.5-flash");
 
   if (!imgPath) {

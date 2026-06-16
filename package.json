@@ -11,7 +11,8 @@
     "lint": "tsc --noEmit",
     "test": "tsx tools/test-modules.ts",
     "test:ocr": "tsx tools/test-ocr.ts",
-    "test:ocr-selftest": "tsx tools/ocr-selftest.ts"
+    "test:ocr-selftest": "tsx tools/ocr-selftest.ts",
+    "firebase:smoke": "tsx tools/firebase-smoke.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

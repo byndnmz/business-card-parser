@@ -31,6 +31,16 @@ env:
     availability:
       - RUNTIME
 
+  - variable: FIREBASE_PROJECT_ID
+    value: kartvizit-d5469
+    availability:
+      - RUNTIME
+
+  - variable: FIRESTORE_DATABASE_ID
+    value: "(default)"
+    availability:
+      - RUNTIME
+
   - variable: GEMINI_MODEL
     value: gemini-2.5-flash
     availability:

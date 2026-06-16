@@ -6,9 +6,8 @@
  *   GEMINI_API_KEY=... npx tsx tools/test-ocr.ts <görsel-yolu>
  *   (örn:  GEMINI_API_KEY=xxx npx tsx tools/test-ocr.ts ./kart.jpg )
  *
- * GEMINI_API_KEY yoksa: otomatik olarak OFFLINE Tesseract kullanılır (gerçek OCR,
- * anahtar gerekmez). Anahtar varsa gemini-2.5-flash görseli okur.
- * Açıkça seçmek için:  OCR_PROVIDER=tesseract npx tsx tools/test-ocr.ts <görsel>
+ * Varsayılan sağlayıcı Gemini'dir. Tesseract şimdilik kapalıdır; yeniden denemek
+ * için: OCR_PROVIDER=tesseract TESSERACT_ENABLED=true npx tsx tools/test-ocr.ts <görsel>
  */
 import dotenv from "dotenv";
 dotenv.config({ path: [".env.local", ".env"] });
@@ -23,8 +22,8 @@ async function main() {
   const hasKey = !!process.env.GEMINI_API_KEY;
 
   console.log("=== B-CIP OCR Test ===");
-  console.log("GEMINI_API_KEY:", hasKey ? "VAR (gemini kullanılabilir)" : "YOK (offline Tesseract kullanılacak)");
-  console.log("OCR_PROVIDER  :", process.env.OCR_PROVIDER || (hasKey ? "gemini" : "tesseract"));
+  console.log("GEMINI_API_KEY:", hasKey ? "VAR (gemini kullanılabilir)" : "YOK (Gemini için anahtar gerekli)");
+  console.log("OCR_PROVIDER  :", process.env.OCR_PROVIDER || "gemini");
   console.log("Model         :", process.env.GEMINI_MODEL || "gemini-2.5-flash");
 
   if (!imgPath) {

@@ -287,14 +287,16 @@ class UnconfiguredProvider implements OcrProvider {
  * Gemini dışındakiler yapılandırma gerektirir (adaptör genişletme noktaları).
  */
 export function getProvider(ai: GoogleGenAI | null): OcrProvider {
-  // Açık seçim yoksa: Gemini anahtarı varsa gemini, YOKSA gerçek offline Tesseract
-  // (mock yerine) — sistem her durumda GERÇEK OCR yapar.
+  // Varsayılan akış Gemini'dir. Tesseract şimdilik pasif; yalnızca
+  // OCR_PROVIDER=tesseract ve TESSERACT_ENABLED=true ile yeniden açılır.
   const explicit = process.env.OCR_PROVIDER?.toLowerCase();
-  const choice = explicit || (ai ? "gemini" : "tesseract");
+  const tesseractEnabled = process.env.TESSERACT_ENABLED === "true";
+  const choice = explicit || "gemini";
   switch (choice) {
     case "gemini":
       return new GeminiProvider(ai);
     case "tesseract":
+      if (!tesseractEnabled) return new UnconfiguredProvider("tesseract-disabled");
       // Self-hosted, API-key'siz, offline OCR (veri sunucudan çıkmaz).
       return new TesseractProvider();
     case "google-vision":

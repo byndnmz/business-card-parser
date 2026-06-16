@@ -6,6 +6,7 @@
  * (Anahtar gerekmez — tamamen offline Tesseract.)
  */
 process.env.OCR_PROVIDER = "tesseract";
+process.env.TESSERACT_ENABLED = "true";
 import sharpImport from "sharp";
 import { parseBusinessCard } from "../src/server/parser";
 import { assessQuality } from "../src/server/image-preprocess";

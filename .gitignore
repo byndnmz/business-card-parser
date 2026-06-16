@@ -15,3 +15,6 @@ coverage/
 *-firebase-adminsdk-*.json
 firebase-debug.log
 .firebase/
+
+# Tesseract modelleri şimdilik pasif; büyük OCR data dosyalarını repoya koyma
+*.traineddata

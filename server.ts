@@ -22,7 +22,7 @@ import {
 } from "./src/server/security";
 import { parseBusinessCard, detectDuplicate, type ParsedCard } from "./src/server/parser";
 
-dotenv.config();
+dotenv.config({ path: [".env.local", ".env"] });
 
 const app = express();
 // Cloud Run / Firebase App Hosting PORT'u ortamdan enjekte eder.
@@ -55,8 +55,8 @@ let persistence: Persistence;
     const configPath = path.join(process.cwd(), "firebase-applet-config.json");
     if (fs.existsSync(configPath)) {
       const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
-      projectId = firebaseConfig.projectId || "";
-      databaseId = firebaseConfig.firestoreDatabaseId;
+      projectId = process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId || "";
+      databaseId = process.env.FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
     } else {
       console.warn("[FIREBASE] firebase-applet-config.json bulunamadı — in-memory mod.");
     }
@@ -680,11 +680,11 @@ app.get("/api/admin/dashboard", requireAuth, requireRole(["admin", "auditor"]), 
       dbConnected: persistence.enabled,
       persistenceSource: persistence.source,
       firewallActive: true,
-      ocrProvider: process.env.OCR_PROVIDER || (ai ? "gemini" : "tesseract"),
-      ocrModel: (process.env.OCR_PROVIDER === "tesseract" || !ai)
+      ocrProvider: process.env.OCR_PROVIDER || "gemini",
+      ocrModel: (process.env.OCR_PROVIDER === "tesseract" && process.env.TESSERACT_ENABLED === "true")
         ? "tesseract (offline, self-hosted)"
         : (process.env.GEMINI_MODEL || "gemini-2.5-flash"),
-      geminiCognitiveEngine: ai ? "ONLINE_ACTIVE" : "OFFLINE_TESSERACT_ACTIVE"
+      geminiCognitiveEngine: ai ? "ONLINE_ACTIVE" : "GEMINI_KEY_REQUIRED"
     }
   });
 });

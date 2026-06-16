@@ -2,20 +2,21 @@
  * ocr/rapidocr-provider.ts — RapidOCR tabanlı OcrProvider (Gemini'nin yerine).
  *
  * Akış: sidecar OCR → layout (kutu→satır→blok) → çıkarıcılar → çok-sinyalli
- * skorlama → çapraz doğrulama → ParsedCard. QR/vCard varsa alanlar DOĞRUDAN
- * oradan alınır (yapısal, %100 güvenilir) ve OCR ile çapraz doğrulanır.
+ * skorlama → çapraz doğrulama → ParsedCard. QR/vCard varsa: karttaki YAZILI metin
+ * ESAS alınır; QR yalnızca eksik alanları doldurur ve farklı kişiye aitse yok
+ * sayılır (bkz. qr-merge.ts).
  *
  * Model sidecar'da BİR KEZ yüklenir (singleton); bu istemci sadece HTTP çağırır.
  */
 
 import type { OcrProvider, OcrInput } from "../parser";
-import type { ParsedCard, FieldHit, QrPayload, FieldName, OcrResult } from "../schema";
+import type { ParsedCard, OcrResult } from "../schema";
 import { runOcr } from "./rapidocr-client";
 import { buildLayout } from "../layout/reconstruct";
 import { extractAllFields } from "../scoring";
 import { crossValidate } from "../cross-validate";
 import { assembleCard } from "../assemble";
-import { makeHit } from "../extractors/util";
+import { mergeQrWithOcr } from "./qr-merge";
 
 function emptyCard(provider: string, warnings: string[]): ParsedCard {
   return {
@@ -24,19 +25,6 @@ function emptyCard(provider: string, warnings: string[]): ParsedCard {
     notes: "", confidence_score: 0, fields: [], provider, warnings,
   };
 }
-
-/** QR/vCard alanlarını yüksek güvenli (yapısal) hit'lere çevirir. */
-function qrToHits(qr: QrPayload): FieldHit[] {
-  const hits: FieldHit[] = [];
-  for (const [key, value] of Object.entries(qr.fields)) {
-    if (!value) continue;
-    hits.push(makeHit(key as FieldName, String(value), 0.99,
-      { x: 0, y: 0, width: 0, height: 0 }, "qr", { valid: true }));
-  }
-  return hits;
-}
-
-const cmp = (s: string) => s.toLowerCase().replace(/\s+/g, "");
 
 export class RapidOcrProvider implements OcrProvider {
   readonly name = "rapidocr";
@@ -60,22 +48,13 @@ export class RapidOcrProvider implements OcrProvider {
     // 1) Layout + OCR tabanlı çıkarım
     const layout = buildLayout(ocr.boxes, ocr.imageWidth, ocr.imageHeight);
     const extracted = extractAllFields(layout);
-    let hits = extracted.hits;
 
-    // 2) QR kısa yolu — yapısal alanlar OCR'ı ezer; çelişki işaretlenir
-    if (ocr.qr?.fields && Object.keys(ocr.qr.fields).length) {
-      const qrHits = qrToHits(ocr.qr);
-      for (const qh of qrHits) {
-        const oh = extracted.hits.find((h) => h.field_name === qh.field_name);
-        if (oh && oh.value && cmp(oh.value) !== cmp(qh.value)) {
-          warnings.push(`QR ve OCR '${qh.field_name}' için farklı değer verdi; QR (yapısal) tercih edildi.`);
-        }
-      }
-      hits = [...extracted.hits, ...qrHits]; // assemble en yüksek güveni (QR) seçer
-    }
+    // 2) QR/vCard: karttaki YAZI esas; QR eksikleri doldurur; farklı kişiyse yok sayılır
+    const qrMerge = mergeQrWithOcr(extracted.hits, ocr.qr);
+    warnings.push(...qrMerge.warnings);
 
     // 3) Çapraz doğrulama + birleştirme
-    const xv = crossValidate(hits);
+    const xv = crossValidate(qrMerge.hits);
     const card = assembleCard(
       xv.hits,
       extracted.notes,

@@ -4,11 +4,12 @@
  * Sentetik OCR kutularıyla layout → çıkarıcılar → skorlama → çapraz doğrulama →
  * birleştirme zincirini uçtan uca doğrular. Çalıştır: npx tsx tools/test-extractors.ts
  */
-import type { OcrBox } from "../src/server/schema";
+import type { OcrBox, FieldHit, QrPayload } from "../src/server/schema";
 import { buildLayout } from "../src/server/layout/reconstruct";
 import { extractAllFields } from "../src/server/scoring";
 import { crossValidate } from "../src/server/cross-validate";
 import { assembleCard } from "../src/server/assemble";
+import { mergeQrWithOcr, identityConflict } from "../src/server/ocr/qr-merge";
 
 let pass = 0, fail = 0;
 function ok(n: string, c: boolean) {
@@ -139,6 +140,33 @@ const rb = runCard(rotatedBeyond, 1536, 2048).card;
 ok("donuk kartta isim logo degil", /Yasin Murat/i.test(rb.full_name));
 ok("donuk kartta unvan", rb.title === "CEO");
 ok("donuk kartta sirket tam adiyla eslesti", rb.company === "BEYOND TECHNOLOGIES");
+
+// --- 8) QR FARKLI kişiye aitse yok sayılmalı (karttaki yazı esas) ---
+console.log("\n[QR KİMLİK ÇAKIŞMASI]");
+const fh = (name: string, value: string, conf = 0.9): FieldHit =>
+  ({ field_name: name as any, value, confidence: conf, bbox: { x: 0, y: 0, width: 0, height: 0 }, source: "ocr", valid: true });
+
+const ocrDamla: FieldHit[] = [
+  fh("full_name", "Damla Reçber"), fh("title", "Project Assistant Specialist"),
+  fh("email", "damlarecber@beyondtech.com.tr"), fh("mobile_phone", "+905308741807"),
+];
+const qrEce: QrPayload = {
+  raw: "", format: "vcard",
+  fields: { full_name: "Ece Saral", title: "Business Development Specialist", email: "ecesaral@beyondtech.com.tr", mobile_phone: "+905527952920" },
+};
+const m8 = mergeQrWithOcr(ocrDamla, qrEce);
+ok("farklı kimlikli QR yok sayıldı", m8.qrIgnored === true);
+ok("karttaki yazı korundu (Ece Saral basılmadı)", !m8.hits.some((h) => /Ece Saral/i.test(h.value)));
+ok("identityConflict: Damla vs Ece = çakışma", identityConflict("Damla Reçber", "Ece Saral") === true);
+ok("identityConflict: aynı kişi = çakışma yok", identityConflict("Damla Reçber", "Damla R Reçber") === false);
+
+// --- 9) AYNI kişi: QR yalnızca eksik alanı doldurur ---
+console.log("\n[QR EKSİK DOLDURMA]");
+const ocrPartial: FieldHit[] = [fh("full_name", "Damla Reçber"), fh("email", "damlarecber@beyondtech.com.tr")];
+const qrSame: QrPayload = { raw: "", format: "vcard", fields: { full_name: "Damla Reçber", mobile_phone: "+905308741807" } };
+const m9 = mergeQrWithOcr(ocrPartial, qrSame);
+ok("aynı kişi QR yok sayılmadı", m9.qrIgnored === false);
+ok("QR eksik alanı doldurdu (mobile)", m9.hits.some((h) => h.field_name === "mobile_phone" && h.value === "+905308741807"));
 
 console.log(`\n${fail === 0 ? "\x1b[32m" : "\x1b[31m"}RESULT: ${pass} passed, ${fail} failed\x1b[0m\n`);
 process.exit(fail === 0 ? 0 : 1);

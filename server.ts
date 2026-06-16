@@ -354,7 +354,15 @@ function publicUser(u: any) {
 const revokedTokens = new Set<string>();
 
 function resolveUser(req: any): any | null {
-  const token = parseCookie(req, "bcip_session");
+  // Web istemcileri httpOnly cookie kullanır; NATIVE MOBİL (iOS/Android)
+  // uygulamalar ise Authorization: Bearer <token> başlığını kullanır.
+  // login/dev-switch/firebase uçları zaten body'de `token` döndürür.
+  const cookieTok = parseCookie(req, "bcip_session");
+  const authHeader = req.headers["authorization"];
+  const bearer = typeof authHeader === "string" && authHeader.startsWith("Bearer ")
+    ? authHeader.slice(7).trim()
+    : null;
+  const token = cookieTok || bearer;
   if (!token || revokedTokens.has(token)) return null;
   const payload = verifySession(token);
   if (!payload) return null;

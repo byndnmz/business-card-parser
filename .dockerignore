@@ -1,0 +1,19 @@
+node_modules
+dist
+.git
+.github
+.env*
+!.env.example
+*.log
+*service-account*.json
+*serviceAccount*.json
+
+# Python sanal ortamı + cache (imajda venv yeniden kurulur)
+ocr-service/.venv
+**/__pycache__
+*.pyc
+
+# Yerel test görselleri (çalışma zamanında gereksiz)
+resim.png
+arkasi_tek_renk_siyah_kartvizit2-766x1000.png
+.firebase

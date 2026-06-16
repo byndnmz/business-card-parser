@@ -1,0 +1,14 @@
+# B-CIP OCR Sidecar — tamamen yerel/offline OCR servisi bağımlılıkları.
+# Kurulum:  python -m venv .venv && .venv\Scripts\pip install -r requirements.txt
+# Yeni birleşik 'rapidocr' paketi (Python 3.13 uyumlu; eski rapidocr-onnxruntime
+# Python<3.13 ister). ocr_engine.py her iki API'yi de destekler.
+rapidocr>=2.0.0
+onnxruntime>=1.20.0
+opencv-python-headless>=4.10.0
+numpy>=1.26.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pillow>=10.2.0
+# QR/vCard kısa yolu (opsiyonel — yoksa servis yine çalışır, QR atlanır).
+# Linux'ta ayrıca sistem paketi gerekir:  apt-get install -y libzbar0
+pyzbar>=0.1.9

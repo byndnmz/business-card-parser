@@ -1,0 +1,6 @@
+{
+  "name": "Business Card Intelligence Platform",
+  "description": "Devlet kurumları ve savunma sanayii seviyesinde yüksek güvenlikli, yapay zeka destekli kartvizit istihbarat, temas yönetim ve denetim platformu.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

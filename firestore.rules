@@ -1,0 +1,127 @@
+// ============================================================================
+// ÖNEMLİ — SUNUCU TARAFI KALICILIK NOTU
+// Bu kurallar isSignedIn() (request.auth != null) gerektirir. server.ts ise
+// Firebase'i KİMLİKSİZ web client SDK'sı ile başlatır; bu yüzden sunucu yazımları
+// bu kurallarca REDDEDİLİR (permission-denied) ve veri yalnızca bellekte tutulur.
+// GERÇEK çok-kullanıcılı kalıcılık için sunucuda Firebase ADMIN SDK'sı
+// (servis hesabı) kullanılmalı; Admin SDK kuralları baypas eder ve yetkilendirme
+// server.ts'teki requireAuth/requireRole katmanında uygulanır. Detay: SECURITY.md
+// ============================================================================
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net - Default Deny Catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    // Global Reusable Security Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    
+    function isAdmin() {
+      return isSignedIn() && getUserRole() == "admin";
+    }
+    
+    function isAuditor() {
+      return isSignedIn() && getUserRole() == "auditor";
+    }
+    
+    function isOperator() {
+      return isSignedIn() && (getUserRole() == "operator" || getUserRole() == "admin");
+    }
+    
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // --- Users Collection Rules ---
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin() || isAuditor());
+      // For creation (self registration), verify fields match auth info
+      allow create: if isSignedIn() && request.auth.uid == userId && 
+                    request.resource.data.keys().hasAll(['id', 'full_name', 'email', 'role', 'status']) &&
+                    request.resource.data.id == userId &&
+                    request.resource.data.email == request.auth.token.email &&
+                    request.resource.data.role == "user" && // Default signup role is restricted to standard user
+                    request.resource.data.status == "active";
+                    
+      // Role modifications are strictly partitioned to admins only
+      allow update: if isSignedIn() && (
+        (request.auth.uid == userId && request.resource.data.role == resource.data.role && request.resource.data.status == resource.data.status) || 
+        isAdmin()
+      ) && request.resource.data.full_name.size() <= 200;
+    }
+
+    // --- Business Cards ---
+    match /business_cards/{cardId} {
+      allow read: if isSignedIn() && (resource.data.owner_user_id == request.auth.uid || isAdmin() || isAuditor() || isOperator());
+      allow create: if isSignedIn() && isEmailVerified() &&
+                    request.resource.data.owner_user_id == request.auth.uid &&
+                    request.resource.data.processing_status in ["queued", "processing", "pending_verification"] &&
+                    request.resource.data.confidence_score >= 0 && request.resource.data.confidence_score <= 1.0;
+      allow update: if isSignedIn() && (
+        resource.data.owner_user_id == request.auth.uid || isOperator()
+      );
+      allow delete: if isSignedIn() && (resource.data.owner_user_id == request.auth.uid || isAdmin());
+    }
+
+    // --- Business Card Fields ---
+    match /business_card_fields/{fieldId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isEmailVerified();
+    }
+
+    // --- Extracted Contacts ---
+    match /contacts/{contactId} {
+      allow read: if isSignedIn() && (resource.data.owner_id == request.auth.uid || isAdmin() || isAuditor() || isOperator());
+      allow create: if isSignedIn() && isEmailVerified() && request.resource.data.full_name is string;
+      allow update: if isSignedIn() && (resource.data.owner_id == request.auth.uid || isOperator());
+      allow delete: if isSignedIn() && (resource.data.owner_id == request.auth.uid || isAdmin());
+    }
+
+    // --- Batches ---
+    match /batches/{batchId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isEmailVerified();
+    }
+
+    // --- Exports Auditing ---
+    match /exports/{exportId} {
+      allow read: if isSignedIn() && (isAdmin() || isAuditor());
+      allow create: if isSignedIn() && isEmailVerified() && request.resource.data.created_by == request.auth.uid;
+    }
+
+    // --- Immutable Audit Logs ---
+    match /audit_logs/{logId} {
+      allow read: if isSignedIn() && (isAdmin() || isAuditor());
+      // Clients can log activity, but strictly cannot modify or delete them
+      allow create: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // --- Corporate Classification Tags ---
+    match /tags/{tagId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isEmailVerified();
+      allow update: if isSignedIn() && isAdmin();
+      allow delete: if isSignedIn() && isAdmin();
+    }
+
+    // --- Contact Tag Mappings ---
+    match /contact_tags/{ctId} {
+      allow read: if isSignedIn();
+      allow create, delete: if isSignedIn() && isEmailVerified();
+    }
+  }
+}

@@ -1,0 +1,29 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+
+# Ortam değişkenleri (sırlar) — .env.example HARİÇ
+.env*
+!.env.example
+
+# Firebase servis hesabı anahtarları — ASLA commit'lenmemeli
+*service-account*.json
+*serviceAccount*.json
+*-firebase-adminsdk-*.json
+firebase-debug.log
+.firebase/
+
+# Tesseract modelleri şimdilik pasif; büyük OCR data dosyalarını repoya koyma
+*.traineddata
+
+# Agent/araç çalışma dizinleri ve hata ayıklama artıkları
+.codex-run/
+ocr-service/_dbg.py
+
+# Yerel/özel test kartvizit görselleri — GERÇEK PII içerir, herkese açık repoya KOYMA
+*.jfif
+resim.png
+arkasi_tek_renk_siyah_kartvizit2-766x1000.png

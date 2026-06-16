@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+# İndirilen/ONNX modelleri (büyük; imaja gömülür ya da ayrıca dağıtılır)
+models/
+*.onnx

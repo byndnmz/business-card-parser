@@ -1,0 +1,61 @@
+# Firebase App Hosting yapılandırması (Node.js + SPA).
+# App Hosting otomatik olarak `npm ci` -> `npm run build` -> `npm start` çalıştırır.
+#
+# ÖNEMLİ: App Hosting YALNIZCA Node uygulamasını çalıştırır; Python RapidOCR
+# sidecar'ını ÇALIŞTIRAMAZ. Bu yüzden bu deployda OCR, YEREL Tesseract yedeğine
+# düşer (bulut AI YOK — Gemini kullanılmaz). TAM RapidOCR (hızlı + en doğru) için
+# birleşik konteyneri Cloud Run'a deploy edin (kök Dockerfile, bkz. DEPLOYMENT.md §3C):
+#   gcloud run deploy bcip --source . --region europe-west4 --memory 2Gi --cpu 2
+#
+# Kalıcılık: Cloud Run üzerinde Admin SDK (ADC) OTOMATİK gelir. Yalnızca:
+#   1) Firestore'u etkinleştir, 2) backend SA'ya Firestore rolü ver,
+#   3) SESSION_SECRET sırrını Secret Manager'a ekle.
+
+runConfig:
+  minInstances: 0
+  maxInstances: 2
+  concurrency: 80
+  cpu: 1
+  memoryMiB: 1024  # Tesseract.js yedeği + sharp için artırıldı
+
+env:
+  # --- Genel ---
+  - variable: NODE_ENV
+    value: production
+    availability:
+      - RUNTIME
+
+  # Üretimde demo rol değiştirici KAPALI olmalı.
+  - variable: ALLOW_DEMO_ROLE_SWITCH
+    value: "false"
+    availability:
+      - RUNTIME
+
+  # Yerel/offline OCR. App Hosting'de sidecar olmadığından Tesseract yedeği çalışır;
+  # Cloud Run birleşik konteynerinde tam RapidOCR çalışır (Dockerfile aynı değeri set eder).
+  - variable: OCR_PROVIDER
+    value: rapidocr
+    availability:
+      - RUNTIME
+
+  - variable: TESSERACT_ENABLED
+    value: "true"
+    availability:
+      - RUNTIME
+
+  - variable: FIREBASE_PROJECT_ID
+    value: kartvizit-d5469
+    availability:
+      - RUNTIME
+
+  - variable: FIRESTORE_DATABASE_ID
+    value: "(default)"
+    availability:
+      - RUNTIME
+
+  # --- Sırlar (Cloud Secret Manager) ---
+  # Önce oluştur:  firebase apphosting:secrets:set SESSION_SECRET
+  - variable: SESSION_SECRET
+    secret: SESSION_SECRET
+    availability:
+      - RUNTIME

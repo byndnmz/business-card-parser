@@ -21,7 +21,8 @@ import {
   Plus,
   Trash2,
   FileCheck,
-  QrCode
+  QrCode,
+  Loader2
 } from "lucide-react";
 import BoundingBoxVisualizer from "./components/BoundingBoxVisualizer";
 import VerifyForm from "./components/VerifyForm";
@@ -76,6 +77,9 @@ export default function App() {
 
   // Drag & drop highlight
   const [isDragging, setIsDragging] = useState(false);
+  // Yükleme/OCR ilerleme durumu (kullanıcıya görsel geri bildirim)
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState("");
 
   // Load initial data and confirm current user session
   useEffect(() => {
@@ -238,6 +242,9 @@ export default function App() {
   };
 
   const uploadCardBase64 = async (base64: string, filename: string, mime: string) => {
+    // Yükleme + OCR sırasında tam ekran gösterge (kullanıcı "bir şey olmuyor" sanmasın).
+    setUploadMsg(`"${filename}" yükleniyor ve OCR ile taranıyor…`);
+    setIsUploading(true);
     try {
       const response = await fetch("/api/cards/upload", {
         method: "POST",
@@ -255,20 +262,28 @@ export default function App() {
         await fetchAllData();
         // Sunucu {card, fields, contact} döner — ilişki nesnesine düzleştir.
         setSelectedCard({ ...data.card, fields: data.fields || [], contact: data.contact, tags: [] });
+        // GENEL ekrandan yüklense bile sonuçların görüldüğü Kartvizit Tarama'ya yönlendir.
         setActiveTab("scanner");
-        if (data.duplicateOf) {
-          alert("Dikkat: Bu kişiye ait olası bir tekrar kayıt (duplicate) tespit edildi. Kayıt 'manuel kontrol' olarak işaretlendi.");
-        }
-        if (data.warnings && data.warnings.length) {
-          console.warn("OCR doğrulama uyarıları:", data.warnings);
-        }
         await logAuditPayload("WEB_FILE_UPLOADER_SUCCESS", { filename });
+
+        // Başarı/uyarı geri bildirimi (alert).
+        const warns: string[] = Array.isArray(data.warnings) ? data.warnings : [];
+        if (data.duplicateOf) {
+          alert("⚠️ Yükleme başarılı, ANCAK olası bir tekrar kayıt (duplicate) tespit edildi. Kayıt 'manuel kontrol' olarak işaretlendi. Sonuçlar Kartvizit Tarama ekranında açıldı.");
+        } else if (warns.length) {
+          alert(`✅ Kartvizit yüklendi ve tarandı. Bazı alanlar düşük güvenli, lütfen kontrol edin:\n\n• ${warns.slice(0, 5).join("\n• ")}\n\nSonuçlar Kartvizit Tarama ekranında açıldı.`);
+        } else {
+          alert("✅ Kartvizit başarıyla yüklendi ve tarandı. Sonuçlar Kartvizit Tarama ekranında açıldı.");
+        }
       } else {
-        alert(data.error || "Görsel yükleme hatası.");
+        alert(`❌ Yükleme başarısız: ${data.error || "Görsel işlenemedi."}`);
       }
     } catch (err) {
       console.error(err);
-      alert("Yükleme işlemi sırasında sunucuyla bağlantı koptu.");
+      alert("❌ Yükleme sırasında sunucuyla bağlantı koptu. Lütfen tekrar deneyin.");
+    } finally {
+      setIsUploading(false);
+      setUploadMsg("");
     }
   };
 
@@ -485,7 +500,18 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#080c14] text-[#e2e8f0] flex flex-col font-sans selection:bg-[#1e40af] selection:text-white animate-fade">
-      
+
+      {/* Yükleme / OCR ilerleme göstergesi (tam ekran) */}
+      {isUploading && (
+        <div className="fixed inset-0 z-[100] bg-[#080c14]/85 backdrop-blur-sm flex flex-col items-center justify-center gap-4 px-6">
+          <Loader2 className="h-10 w-10 text-[#1e40af] animate-spin" />
+          <div className="text-center">
+            <p className="text-sm font-semibold text-slate-100">{uploadMsg || "İşleniyor…"}</p>
+            <p className="text-[11px] text-[#94a3b8] font-mono mt-1.5">Yerel RapidOCR motoru çalışıyor — birkaç saniye sürebilir.</p>
+          </div>
+        </div>
+      )}
+
       {/* Platform Banner Alert / Defense Classification Bar */}
       <div className="bg-red-950/60 border-b border-[#1e293b] text-center py-1.5 px-4 text-[10px] font-mono tracking-widest text-red-400 font-bold flex justify-center items-center gap-1.5 select-none">
         <Shield className="h-3.5 w-3.5 animate-pulse" />

@@ -51,7 +51,10 @@ ENV OCR_PROVIDER=rapidocr \
     RAPIDOCR_PRELOAD=true \
     RAPIDOCR_BOX_THRESH=0.3 \
     RAPIDOCR_UNCLIP_RATIO=1.8 \
-    PYTHON_BIN=/opt/ocrvenv/bin/python
+    PYTHON_BIN=/opt/ocrvenv/bin/python \
+    ALLOW_DEMO_ROLE_SWITCH=false
+# ALLOW_DEMO_ROLE_SWITCH=false: ÜRETİMDE rol değiştirici KAPALI (yetki yükseltme
+# açığını kapatır). Demo/sunum için Cloud Run'da env'i "true" yapabilirsiniz.
 
 # Cloud Run $PORT'u (8080) enjekte eder; Node onu okur. Sidecar 127.0.0.1:8765 (iç).
 EXPOSE 8080

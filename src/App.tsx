@@ -258,23 +258,15 @@ export default function App() {
       });
 
       const data = await response.json();
-      if (response.ok) {
-        await fetchAllData();
-        // Sunucu {card, fields, contact} döner — ilişki nesnesine düzleştir.
-        setSelectedCard({ ...data.card, fields: data.fields || [], contact: data.contact, tags: [] });
+      if (response.ok && data.card) {
+        // Upload ANINDA döndü; kart "processing". OCR arka planda çalışır.
+        setSelectedCard({ ...data.card, fields: [], contact: data.contact, tags: [] });
         // GENEL ekrandan yüklense bile sonuçların görüldüğü Kartvizit Tarama'ya yönlendir.
         setActiveTab("scanner");
-        await logAuditPayload("WEB_FILE_UPLOADER_SUCCESS", { filename });
-
-        // Başarı/uyarı geri bildirimi (alert).
-        const warns: string[] = Array.isArray(data.warnings) ? data.warnings : [];
-        if (data.duplicateOf) {
-          alert("⚠️ Yükleme başarılı, ANCAK olası bir tekrar kayıt (duplicate) tespit edildi. Kayıt 'manuel kontrol' olarak işaretlendi. Sonuçlar Kartvizit Tarama ekranında açıldı.");
-        } else if (warns.length) {
-          alert(`✅ Kartvizit yüklendi ve tarandı. Bazı alanlar düşük güvenli, lütfen kontrol edin:\n\n• ${warns.slice(0, 5).join("\n• ")}\n\nSonuçlar Kartvizit Tarama ekranında açıldı.`);
-        } else {
-          alert("✅ Kartvizit başarıyla yüklendi ve tarandı. Sonuçlar Kartvizit Tarama ekranında açıldı.");
-        }
+        await fetchAllData();
+        await logAuditPayload("WEB_FILE_UPLOADER_QUEUED", { filename });
+        // Durumu sorgula (OCR bitince sonuçları yansıtır + bilgilendirir).
+        pollCardStatus(data.card.id);
       } else {
         alert(`❌ Yükleme başarısız: ${data.error || "Görsel işlenemedi."}`);
       }
@@ -285,6 +277,43 @@ export default function App() {
       setIsUploading(false);
       setUploadMsg("");
     }
+  };
+
+  // OCR arka planda çalışırken kartın durumunu sorgular; bitince sonucu yansıtır.
+  const pollCardStatus = (cardId: string) => {
+    const start = Date.now();
+    const tick = async () => {
+      try {
+        const res = await fetch(`/api/cards/${cardId}`);
+        const d = await res.json();
+        const st = d?.card?.processing_status;
+        if (res.ok && st && st !== "processing") {
+          setSelectedCard(prev =>
+            prev && prev.id === cardId
+              ? { ...d.card, fields: d.fields || [], contact: d.contact, tags: d.tags || [] }
+              : prev
+          );
+          await fetchAllData();
+          if (st === "failed") {
+            alert("❌ OCR başarısız oldu. Lütfen daha net bir görselle tekrar deneyin.");
+          } else if (st === "manual_review") {
+            alert("✅ Tarama tamamlandı — bazı alanlar düşük güvenli, manuel kontrol gerekebilir. Sonuçlar Kartvizit Tarama ekranında.");
+          } else {
+            alert("✅ Kartvizit başarıyla tarandı. Sonuçlar Kartvizit Tarama ekranında.");
+          }
+          return;
+        }
+        if (Date.now() - start > 90000) {
+          alert("⏳ OCR beklenenden uzun sürüyor. Birazdan listeden kontrol edebilirsiniz.");
+          return;
+        }
+        setTimeout(tick, 1500);
+      } catch (e) {
+        console.error("Durum sorgulama hatası:", e);
+        if (Date.now() - start < 90000) setTimeout(tick, 2500);
+      }
+    };
+    setTimeout(tick, 1200);
   };
 
   // Admin user modify
@@ -1030,6 +1059,16 @@ export default function App() {
 
               {/* Central Area: Selected Card Bounding Visualizer Overlay & Verification Panel */}
               <div className="xl:col-span-8 space-y-5 flex flex-col">
+                {/* OCR arka planda işleniyor göstergesi */}
+                {selectedCard?.processing_status === "processing" && (
+                  <div className="flex items-center gap-3 bg-blue-950/30 border border-[#1e40af]/40 rounded-lg px-4 py-3">
+                    <Loader2 className="h-5 w-5 text-[#1e40af] animate-spin flex-shrink-0" />
+                    <div>
+                      <p className="text-xs font-semibold text-blue-200">OCR işleniyor…</p>
+                      <p className="text-[10px] text-[#94a3b8] font-mono">Yerel RapidOCR motoru kartı tarıyor; sonuçlar birazdan burada belirecek.</p>
+                    </div>
+                  </div>
+                )}
                 {selectedCard ? (
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
                     

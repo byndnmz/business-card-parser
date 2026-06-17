@@ -1002,7 +1002,105 @@ function buildRecordsFromParsed(opts: {
   return { card, fields, contact };
 }
 
-// Tek kartvizit yükleme — GERÇEK OCR çalıştırır (sabit sahte veri DEĞİL).
+// --- ASYNC OCR İŞ KUYRUĞU (in-process) -------------------------------------
+// Upload ANINDA "processing" kart döner; OCR ARKA PLANDA çalışıp kaydı günceller.
+// Frontend GET /api/cards/:id ile durumu sorgular (polling). Böylece OCR'ın süresi
+// HTTP isteğini bloklamaz. (Tek-instance pilot için uygundur; çok-instance + yüksek
+// hacimde Cloud Tasks + ayrı worker'a taşınmalı.)
+
+/** "processing" durumunda kart + boş contact oluşturur (kararlı id'ler). */
+function createProcessingCard(opts: {
+  ownerId: string; source: string; imageDataUrl: string; batchId: string; filename?: string;
+}) {
+  const { ownerId, source, imageDataUrl, batchId, filename } = opts;
+  const uid = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+  const cardId = `card-${uid}`;
+  const contactId = `contact-${uid}`;
+  const now = new Date().toISOString();
+  const card: any = {
+    id: cardId, owner_user_id: ownerId, image_url: imageDataUrl,
+    processing_status: "processing", confidence_score: 0, source_type: source,
+    batch_id: batchId, original_filename: sanitizeString(filename, 200),
+    created_at: now, updated_at: now,
+  };
+  const contact: any = {
+    id: contactId, business_card_id: cardId, first_name: "", last_name: "", full_name: "",
+    title: "", company: "", department: "", email: "", phone: "", mobile_phone: "",
+    website: "", address: "", city: "", country: "", linkedin: "", notes: "",
+    owner_id: ownerId, is_deleted: false, created_at: now, updated_at: now,
+  };
+  dbBusinessCards.push(card);
+  saveToFirestore("business_cards", cardId, card);
+  dbContacts.push(contact);
+  saveToFirestore("contacts", contactId, contact);
+  return { card, contact, cardId, contactId, uid };
+}
+
+/** Arka planda OCR çalıştırır ve "processing" kaydı sonuçla günceller. */
+async function processCardOcr(opts: {
+  cardId: string; contactId: string; uid: string; imageBase64: string; mimeType: string;
+  actorId: string; ip: string; ua: string; filename?: string; sizeBytes: number;
+}) {
+  const { cardId, contactId, uid, imageBase64, mimeType, actorId, ip, ua, filename, sizeBytes } = opts;
+  const card = dbBusinessCards.find((c) => c.id === cardId) as any;
+  if (!card) return;
+  try {
+    const parsed = await parseBusinessCard(ai, { base64: imageBase64, mimeType });
+    const duplicateOf = detectDuplicate(dbContacts as any, {
+      email: parsed.email, phone: parsed.phone, full_name: parsed.full_name, company: parsed.company,
+    });
+    const status =
+      duplicateOf || parsed.confidence_score < 0.7 || parsed.warnings.length > 0
+        ? "manual_review" : "pending_verification";
+
+    card.processing_status = status;
+    card.confidence_score = parsed.confidence_score;
+    card.updated_at = new Date().toISOString();
+    saveToFirestore("business_cards", cardId, card);
+
+    const fields = parsed.fields.map((f, i) => ({
+      id: `field-${uid}-${i}`, business_card_id: cardId,
+      field_name: sanitizeString(f.field_name, 40), field_value: sanitizeString(f.field_value, 500),
+      confidence_score: f.confidence_score,
+      bounding_box_x: f.bounding_box.x, bounding_box_y: f.bounding_box.y,
+      bounding_box_width: f.bounding_box.width, bounding_box_height: f.bounding_box.height,
+      is_verified: false,
+    }));
+    dbBusinessCardFields.push(...(fields as any));
+    for (const f of fields) saveToFirestore("business_card_fields", f.id, f);
+
+    const contact = dbContacts.find((c) => c.id === contactId) as any;
+    if (contact) {
+      const fullName = sanitizeString(parsed.full_name, 200);
+      const nameParts = fullName.split(" ");
+      Object.assign(contact, {
+        first_name: nameParts[0] || "", last_name: nameParts.slice(1).join(" ") || "",
+        full_name: fullName, title: sanitizeString(parsed.title, 200),
+        company: sanitizeString(parsed.company, 200), department: sanitizeString(parsed.department, 200),
+        email: sanitizeString(parsed.email, 254), phone: sanitizeString(parsed.phone, 40),
+        mobile_phone: sanitizeString(parsed.mobile_phone, 40), website: sanitizeString(parsed.website, 200),
+        address: sanitizeString(parsed.address, 400), city: sanitizeString(parsed.city, 100),
+        country: sanitizeString(parsed.country, 100), linkedin: sanitizeString(parsed.linkedin, 200),
+        notes: parsed.warnings.length ? `Doğrulama uyarıları: ${parsed.warnings.join("; ")}` : "",
+        updated_at: new Date().toISOString(),
+      });
+      saveToFirestore("contacts", contactId, contact);
+    }
+
+    createAuditLog(actorId, "OCR_COMPLETED", "business_cards", cardId, null,
+      { filename, sizeKb: Math.round(sizeBytes / 1024), provider: parsed.provider, confidence: parsed.confidence_score, duplicateOf, status },
+      ip, ua);
+  } catch (err) {
+    console.error("[OCR-JOB] başarısız:", err);
+    card.processing_status = "failed";
+    card.updated_at = new Date().toISOString();
+    saveToFirestore("business_cards", cardId, card);
+    createAuditLog(actorId, "OCR_FAILED", "business_cards", cardId, null,
+      { error: String((err as any)?.message || err) }, ip, ua);
+  }
+}
+
+// Tek kartvizit yükleme — OCR'ı ARKA PLANA alır; upload ANINDA "processing" döner.
 app.post("/api/cards/upload", requireAuth, uploadLimiter, async (req, res) => {
   const imageBase64 = req.body?.imageBase64;
   const filename = sanitizeString(req.body?.filename, 200);
@@ -1018,61 +1116,28 @@ app.post("/api/cards/upload", requireAuth, uploadLimiter, async (req, res) => {
     return res.status(400).json({ error: "Geçersiz kaynak (source) değeri." });
   }
 
-  let parsed: ParsedCard;
-  try {
-    parsed = await parseBusinessCard(ai, { base64: imageBase64, mimeType: check.detectedType! });
-  } catch (err) {
-    console.error("[UPLOAD] OCR hatası:", err);
-    return res.status(502).json({ error: "OCR motoru kartı işleyemedi. Lütfen tekrar deneyin." });
-  }
-
-  // Tekrar eden kayıt (duplicate) tespiti — e-posta / telefon / ad+şirket.
-  const duplicateOf = detectDuplicate(dbContacts as any, {
-    email: parsed.email,
-    phone: parsed.phone,
-    full_name: parsed.full_name,
-    company: parsed.company,
-  });
-
-  // Düşük güven, doğrulama uyarısı veya duplicate → manuel kontrol gerektirir.
-  const status =
-    duplicateOf || parsed.confidence_score < 0.7 || parsed.warnings.length > 0
-      ? "manual_review"
-      : "pending_verification";
-
   const imageDataUrl = imageBase64.startsWith("data:")
     ? imageBase64
     : `data:${check.detectedType};base64,${imageBase64}`;
 
-  const { card, fields, contact } = buildRecordsFromParsed({
-    parsed,
-    ownerId: actor(req).id,
-    source,
-    imageDataUrl,
-    batchId,
-    status,
-    filename,
+  const actorId = actor(req).id;
+  const ip = clientIp(req);
+  const ua = (req.headers["user-agent"] as string) || "Web UI";
+
+  // 1) Kaydı "processing" olarak oluştur ve ANINDA dön.
+  const { card, contact, cardId, contactId, uid } = createProcessingCard({
+    ownerId: actorId, source, imageDataUrl, batchId, filename,
   });
+  createAuditLog(actorId, "UPLOAD_QUEUED", "business_cards", cardId, null,
+    { filename, sizeKb: Math.round(check.sizeBytes / 1024) }, ip, ua);
 
-  dbBusinessCards.push(card as any);
-  saveToFirestore("business_cards", card.id, card);
-  dbBusinessCardFields.push(...(fields as any));
-  for (const f of fields) saveToFirestore("business_card_fields", f.id, f);
-  dbContacts.push(contact as any);
-  saveToFirestore("contacts", contact.id, contact);
+  res.json({ card, contact, status: "processing" });
 
-  createAuditLog(
-    actor(req).id,
-    "SINGLE_BUSINESS_CARD_UPLOADED",
-    "business_cards",
-    card.id,
-    null,
-    { filename, sizeKb: Math.round(check.sizeBytes / 1024), provider: parsed.provider, confidence: parsed.confidence_score, duplicateOf },
-    clientIp(req),
-    req.headers["user-agent"] || "Web UI"
-  );
-
-  res.json({ card, fields, contact, duplicateOf, warnings: parsed.warnings });
+  // 2) OCR'ı ARKA PLANDA çalıştır (yanıtı bloklamaz).
+  void processCardOcr({
+    cardId, contactId, uid, imageBase64, mimeType: check.detectedType!,
+    actorId, ip, ua, filename, sizeBytes: check.sizeBytes,
+  });
 });
 
 // Toplu yükleme — her dosya için GERÇEK OCR çalıştırır; geçersiz dosyalar

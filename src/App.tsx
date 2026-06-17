@@ -31,6 +31,7 @@ import ExportDialog from "./components/ExportDialog";
 import AuditLogView from "./components/AuditLogView";
 import AdminPanel from "./components/AdminPanel";
 import QrCodeScannerModal from "./components/QrCodeScannerModal";
+import LoginScreen from "./components/LoginScreen";
 import MfaSetupModal from "./components/MfaSetupModal";
 import { CardWithRelationships, User, AuditLog, Batch, Tag, Contact } from "./types";
 import { testConnection } from "./firebase";
@@ -89,10 +90,8 @@ export default function App() {
       if (data.user) {
         setCurrentUser(data.user);
         fetchAllData();
-      } else {
-        // Safe auto login default for instant loading and previewing
-        handleAutoLogin("sahinerahmet32@gmail.com", "admin");
       }
+      // Oturum yoksa login ekranı gösterilir (otomatik giriş kaldırıldı).
     } catch (err) {
       console.error(err);
     } finally {
@@ -100,20 +99,18 @@ export default function App() {
     }
   };
 
-  const handleAutoLogin = async (email: string, role: string) => {
+  const handleLoginSuccess = (user: User) => {
+    setCurrentUser(user);
+    fetchAllData();
+  };
+
+  const handleLogout = async () => {
     try {
-      const response = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, role })
-      });
-      const data = await response.json();
-      if (data.user) {
-        setCurrentUser(data.user);
-        fetchAllData();
-      }
+      await fetch("/api/auth/logout", { method: "POST" });
     } catch (err) {
-      console.error("Auto login failed:", err);
+      console.error("Çıkış hatası:", err);
+    } finally {
+      setCurrentUser(null);
     }
   };
 
@@ -474,6 +471,18 @@ export default function App() {
     return matchesSearch && matchesTag && matchesCategory;
   });
 
+  // --- OTURUM GEÇİDİ: yükleniyor → login ekranı → uygulama ---
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#080c14] flex items-center justify-center text-slate-400 font-mono text-sm">
+        Yükleniyor…
+      </div>
+    );
+  }
+  if (!currentUser) {
+    return <LoginScreen onAuthenticated={handleLoginSuccess} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#080c14] text-[#e2e8f0] flex flex-col font-sans selection:bg-[#1e40af] selection:text-white animate-fade">
       
@@ -540,6 +549,16 @@ export default function App() {
                 ))}
               </div>
             </div>
+
+            {/* Oturumu kapat */}
+            <button
+              onClick={handleLogout}
+              className="border-l border-[#1e293b] pl-3 ml-1 text-[#94a3b8] hover:text-red-400 transition-colors cursor-pointer flex items-center gap-1.5"
+              title="Oturumu kapat"
+            >
+              <LogOut className="h-4 w-4" />
+              <span className="text-[9px] font-mono font-bold uppercase">Çıkış</span>
+            </button>
           </div>
         )}
       </header>

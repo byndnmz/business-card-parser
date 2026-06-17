@@ -18,6 +18,8 @@ import {
   parseCookie,
   setSessionCookie,
   clearSessionCookie,
+  hashPassword,
+  verifyPassword,
   type Schema,
 } from "./src/server/security";
 import { parseBusinessCard, detectDuplicate, type ParsedCard } from "./src/server/parser";
@@ -338,10 +340,41 @@ function createAuditLog(userId: string, action: string, entityType: string, enti
   return newLog;
 }
 
-/** Kullanıcı nesnesini istemciye dönmeden önce sırları (mfa_secret) çıkarır. */
+/** Açılışta yönetici (admin) hesabını garanti eder — parolalı giriş için.
+ *  Kullanıcı adı: admin · Parola: ADMIN_PASSWORD env (varsayılan "Beyond.1234").
+ *  Mevcut Firestore'da yoksa eklenir (in-memory ya da boş DB'de seed ile gelir). */
+function ensureAdminUser() {
+  const existing = dbUsers.find((u: any) => (u.username || "").toLowerCase() === "admin");
+  const pw = process.env.ADMIN_PASSWORD || "Beyond.1234";
+  if (existing) {
+    // Parola hash'i yoksa (eski kayıt) ekle — giriş çalışsın.
+    if (!(existing as any).password_hash) {
+      (existing as any).password_hash = hashPassword(pw);
+      (existing as any).username = "admin";
+      saveToFirestore("users", existing.id, existing);
+    }
+    return;
+  }
+  const admin: any = {
+    id: "u-admin",
+    full_name: "Sistem Yöneticisi",
+    email: "admin@beyond.local",
+    username: "admin",
+    role: "admin",
+    mfa_enabled: false,
+    status: "active",
+    password_hash: hashPassword(pw),
+    created_at: new Date().toISOString(),
+  };
+  dbUsers.push(admin);
+  saveToFirestore("users", admin.id, admin);
+  console.log("[AUTH] 'admin' yönetici hesabı hazır (parolalı giriş).");
+}
+
+/** Kullanıcı nesnesini istemciye dönmeden önce sırları (mfa_secret, parola) çıkarır. */
 function publicUser(u: any) {
   if (!u) return u;
-  const { mfa_secret, ...safe } = u;
+  const { mfa_secret, password_hash, ...safe } = u;
   return safe;
 }
 
@@ -437,27 +470,24 @@ const VALID_ROLES = ["admin", "operator", "auditor", "user"] as const;
 
 // Auth Endpoints
 app.post("/api/auth/login", authLimiter, (req, res) => {
-  const email = sanitizeString(req.body?.email, 254).toLowerCase();
-  if (!EMAIL_RE.test(email)) {
-    return res.status(400).json({ error: "Geçerli bir e-posta adresi gereklidir." });
+  // Kullanıcı adı VEYA e-posta + PAROLA ile giriş (gerçek oturum doğrulaması).
+  const identifier = sanitizeString(req.body?.username ?? req.body?.email, 254).toLowerCase();
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  if (!identifier || !password) {
+    return res.status(400).json({ error: "Kullanıcı adı/e-posta ve parola gereklidir." });
   }
 
-  // GÜVENLİK: İstemci kendi rolünü SEÇEMEZ. Yeni kayıtlar daima en düşük yetkiyle
-  // ("user") açılır; mevcut kullanıcılar veritabanındaki rolüyle giriş yapar.
-  // (Önceki kod body'deki `role` ile herkesin admin olmasına izin veriyordu — kaldırıldı.)
-  let user = dbUsers.find((u) => u.email === email);
-  if (!user) {
-    user = {
-      id: `u-${Date.now()}`,
-      full_name: sanitizeString(email.split("@")[0], 120).toUpperCase(),
-      email,
-      role: "user",
-      mfa_enabled: false,
-      status: "active",
-      created_at: new Date().toISOString(),
-    };
-    dbUsers.push(user);
-    saveToFirestore("users", user.id, user);
+  const user = dbUsers.find(
+    (u: any) =>
+      ((u.username || "").toLowerCase() === identifier) ||
+      ((u.email || "").toLowerCase() === identifier)
+  ) as any;
+
+  // GÜVENLİK: kullanıcı yok / parola yok / parola yanlış → aynı jenerik hata
+  // (kullanıcı sayımı/enumeration engellenir). Otomatik kayıt KALDIRILDI.
+  if (!user || !user.password_hash || !verifyPassword(password, user.password_hash)) {
+    createAuditLog("anonymous", "LOGIN_FAILED", "auth", "login", null, { identifier }, clientIp(req), req.headers["user-agent"] || "Web Agent");
+    return res.status(401).json({ error: "Kullanıcı adı veya parola hatalı." });
   }
 
   if (user.status === "suspended") {
@@ -1430,7 +1460,9 @@ app.post("/api/exports/:format", requireAuth, exportLimiter, requireRole(["admin
       ? fieldsToExport 
       : ["full_name", "title", "company", "department", "email", "phone", "website", "address", "city", "country"];
     
-    let csvString = headers.join(",") + "\n";
+    // UTF-8 BOM: Excel'in Türkçe karakterleri (ş, ç, ğ, ı, İ, ö, ü) doğru
+    // göstermesi için gereklidir (BOM olmadan ş/ç bozuk görünür).
+    let csvString = "﻿" + headers.join(",") + "\n";
     sourceContacts.forEach(c => {
       const row = headers.map((h: string) => csvCell((c as any)[h]));
       csvString += row.join(",") + "\n";
@@ -1565,6 +1597,8 @@ app.use((err: any, _req: any, res: any, _next: any) => {
 async function startServer() {
   // Synchronize dynamic cache from real Firebase Firestore Instance
   await initFirebaseAndSeed();
+  // Parolalı yönetici (admin) hesabını garanti et — gerçek login için.
+  ensureAdminUser();
   // Audit zincirini (yüklenmiş/seed loglardan) tutarlı hale getir.
   initAuditChain();
 

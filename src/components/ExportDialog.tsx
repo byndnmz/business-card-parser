@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { Download, FileJson, FileSpreadsheet, CreditCard, ShieldAlert, FileText, Check } from "lucide-react";
 import { CardWithRelationships } from "../types";
 
@@ -28,6 +28,30 @@ export default function ExportDialog({ cards, onLogAudit, onClose }: ExportDialo
   const [selectedFields, setSelectedFields] = useState<string[]>(exportFields.map(f => f.id));
   const [exportFormat, setExportFormat] = useState<"csv" | "json" | "vcf" | "pdf">("csv");
   const [isExporting, setIsExporting] = useState(false);
+
+  // Kapsam: tümü / belirli şirket / belirli kategori (etiket). Filtreleme istemcide.
+  const [scope, setScope] = useState<"all" | "company" | "category">("all");
+  const [companyFilter, setCompanyFilter] = useState<string>("");
+  const [categoryFilter, setCategoryFilter] = useState<string>("");
+
+  // Kartlardan benzersiz şirket ve kategori listelerini türet.
+  const companies = useMemo(
+    () => Array.from(new Set(cards.map(c => c.contact?.company).filter(Boolean) as string[]))
+      .sort((a, b) => a.localeCompare(b, "tr")),
+    [cards]
+  );
+  const categories = useMemo(() => {
+    const map = new Map<string, string>();
+    cards.forEach(c => (c.tags || []).forEach(t => { if (t?.id) map.set(t.id, t.name); }));
+    return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, "tr"));
+  }, [cards]);
+
+  // Seçilen kapsama göre dışa aktarılacak kartlar.
+  const targetCards = useMemo(() => {
+    if (scope === "company") return companyFilter ? cards.filter(c => c.contact?.company === companyFilter) : [];
+    if (scope === "category") return categoryFilter ? cards.filter(c => (c.tags || []).some(t => t.id === categoryFilter)) : [];
+    return cards;
+  }, [cards, scope, companyFilter, categoryFilter]);
   const [exportedFile, setExportedFile] = useState<{
     filename: string;
     content?: string;
@@ -53,11 +77,15 @@ export default function ExportDialog({ cards, onLogAudit, onClose }: ExportDialo
 
   const executeServerExport = async () => {
     setIsExporting(true);
-    onLogAudit("EXPORT_PREPARATION_STARTED", { format: exportFormat, itemsCount: cards.length });
+    onLogAudit("EXPORT_PREPARATION_STARTED", {
+      format: exportFormat, itemsCount: targetCards.length,
+      scope, company: scope === "company" ? companyFilter : undefined,
+      category: scope === "category" ? categoryFilter : undefined,
+    });
 
     try {
-      // Clean target IDs list
-      const recordIds = cards.map(c => c.contact?.id).filter(Boolean);
+      // Clean target IDs list (seçilen kapsama göre süzülmüş)
+      const recordIds = targetCards.map(c => c.contact?.id).filter(Boolean);
 
       const response = await fetch(`/api/exports/${exportFormat}`, {
         method: "POST",
@@ -118,7 +146,9 @@ export default function ExportDialog({ cards, onLogAudit, onClose }: ExportDialo
               GÜVENLİ DATA DIŞA AKTARIM (EXPORT)
             </h3>
             <span className="text-[10px] font-mono text-[#94a3b8] uppercase">
-              Seçili Kartvizit İstihbarat Kayıt Sayısı: {cards.length} Adet
+              Dışa Aktarılacak Kayıt: {targetCards.length} Adet
+              {scope === "company" && companyFilter ? ` · ${companyFilter}` : ""}
+              {scope === "category" && categoryFilter ? ` · ${categories.find(c => c.id === categoryFilter)?.name || ""}` : ""}
             </span>
           </div>
           <button
@@ -224,6 +254,44 @@ export default function ExportDialog({ cards, onLogAudit, onClose }: ExportDialo
               </div>
             </div>
 
+            {/* Kapsam Seçimi: tümü / şirket / kategori */}
+            <div className="space-y-2">
+              <label className="text-[11px] font-bold text-[#94a3b8] uppercase font-display block">Kapsam — Kimleri Aktar?</label>
+              <div className="grid grid-cols-3 gap-2">
+                {([["all", "Tümü"], ["company", "Şirkete Göre"], ["category", "Kategoriye Göre"]] as const).map(([val, label]) => (
+                  <button
+                    key={val}
+                    onClick={() => setScope(val)}
+                    className={`p-2 rounded-lg border text-center text-[10px] font-bold font-mono transition-all cursor-pointer ${
+                      scope === val ? "bg-[#1e40af]/30 border-[#1e40af] text-blue-300" : "bg-[#080c14] border-[#1e293b] text-slate-400 hover:border-slate-700"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {scope === "company" && (
+                <select
+                  value={companyFilter}
+                  onChange={e => setCompanyFilter(e.target.value)}
+                  className="w-full bg-[#080c14] border border-[#1e293b] rounded text-xs text-slate-200 px-2 py-2 font-mono cursor-pointer"
+                >
+                  <option value="">— Şirket seçin ({companies.length} şirket) —</option>
+                  {companies.map(co => <option key={co} value={co}>{co}</option>)}
+                </select>
+              )}
+              {scope === "category" && (
+                <select
+                  value={categoryFilter}
+                  onChange={e => setCategoryFilter(e.target.value)}
+                  className="w-full bg-[#080c14] border border-[#1e293b] rounded text-xs text-slate-200 px-2 py-2 font-mono cursor-pointer"
+                >
+                  <option value="">— Kategori seçin ({categories.length} kategori) —</option>
+                  {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+                </select>
+              )}
+            </div>
+
             {/* Fields Selection */}
             <div className="space-y-2">
               <div className="flex justify-between items-center">
@@ -267,10 +335,14 @@ export default function ExportDialog({ cards, onLogAudit, onClose }: ExportDialo
 
             <button
               onClick={executeServerExport}
-              disabled={selectedFields.length === 0 || isExporting}
+              disabled={selectedFields.length === 0 || isExporting || targetCards.length === 0}
               className="w-full bg-[#1e40af] hover:bg-blue-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-xs tracking-wider uppercase py-3 rounded transition-all flex items-center justify-center gap-2 font-display"
             >
-              {isExporting ? "Dosya Paketleniyor..." : "Export Başlat & Log Kaydet"}
+              {isExporting
+                ? "Dosya Paketleniyor..."
+                : targetCards.length === 0
+                ? (scope === "company" ? "Önce şirket seçin" : scope === "category" ? "Önce kategori seçin" : "Aktarılacak kayıt yok")
+                : `Export Başlat (${targetCards.length} kayıt) & Log Kaydet`}
             </button>
           </div>
         )}

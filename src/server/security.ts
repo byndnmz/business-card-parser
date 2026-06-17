@@ -114,6 +114,26 @@ export function clearSessionCookie(res: Response) {
   res.setHeader("Set-Cookie", "bcip_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
 }
 
+// --- PAROLA HASH'LEME (scrypt + rastgele salt) -----------------------------
+// Parolalar ASLA düz metin saklanmaz. Format: "salt:hash" (hex).
+
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${hash}`;
+}
+
+/** Sabit zamanlı (timing-safe) parola doğrulaması. */
+export function verifyPassword(password: string, stored: string | undefined | null): boolean {
+  if (!stored || typeof stored !== "string" || !stored.includes(":")) return false;
+  const [salt, hash] = stored.split(":");
+  if (!salt || !hash) return false;
+  const expected = Buffer.from(hash, "hex");
+  const actual = crypto.scryptSync(password, salt, 64);
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
+
 // --- RATE LIMITING ----------------------------------------------------------
 
 interface Bucket {

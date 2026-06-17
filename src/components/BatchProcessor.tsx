@@ -10,6 +10,7 @@ import {
   RefreshCw,
   UploadCloud,
 } from "lucide-react";
+import { prepareImageForUpload } from "../client/upload-prep";
 
 interface BatchProcessorProps {
   batches: Batch[];
@@ -25,15 +26,6 @@ type BatchFileRow = {
   info: string;
   company: string;
 };
-
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || "").split(",")[1] || "");
-    reader.onerror = () => reject(reader.error || new Error("Dosya okunamadi."));
-    reader.readAsDataURL(file);
-  });
-}
 
 function rowFromProcessed(item: any): BatchFileRow {
   const card = item.card || {};
@@ -92,11 +84,15 @@ export default function BatchProcessor({
     onLogAudit("BATCH_UPLOAD_STARTED", { count: files.length });
 
     try {
-      const payloadFiles = await Promise.all(files.map(async (file) => ({
-        filename: file.name,
-        mimeType: file.type,
-        imageBase64: await readFileAsBase64(file),
-      })));
+      const preparedFiles = await Promise.all(files.map((file) => prepareImageForUpload(file)));
+      const payloadFiles = preparedFiles.map((prepared) => ({
+        filename: prepared.filename,
+        mimeType: prepared.mimeType,
+        imageHash: prepared.imageHash,
+        originalBytes: prepared.originalBytes,
+        processedBytes: prepared.processedBytes,
+        imageBase64: prepared.base64,
+      }));
 
       setSelectedBatchFiles(files.map((file, index) => ({
         id: `processing-${index}`,

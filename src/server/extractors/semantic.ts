@@ -25,9 +25,9 @@ const EMAIL_OR_URL = /@|https?:\/\/|www\.|\.(com|net|org|gov|edu|tr|io)\b/i;
 const HAS_DIGIT = /\d/;
 
 /** TAM sözcük (sınırlı) — kısa eklerin kelime içinde yanlış eşleşmesini önler. */
-const anyWord = (lower: string, words: string[]): boolean => words.some((w) => containsWord(lower, w));
+const anyWord = (lower: string, words: string[]): boolean => words.some((w) => containsWord(lower, w) || containsWord(asciiFold(lower), asciiFold(w)));
 /** KÖK (ek-toleranslı) — TR çekim eklerini yakalar. */
-const anyStem = (lower: string, words: string[]): boolean => words.some((w) => containsStem(lower, w));
+const anyStem = (lower: string, words: string[]): boolean => words.some((w) => containsStem(lower, w) || containsStem(asciiFold(lower), asciiFold(w)));
 
 function hasTitleKw(lower: string): boolean {
   if (anyStem(lower, TITLE_KEYWORDS_TR)) return true; // TR kökleri ek-toleranslı
@@ -84,6 +84,16 @@ export function companyScore(line: LayoutLine, m: LayoutModel, emailDomainCore?:
   if (fontRatio(line, m) >= THRESHOLDS.largeFontRatio) { score += 0.12; signals.bigFont = 1; }
   if (isTopRegion(line, m)) score += 0.05;
   if (isMostlyCaps(text)) { score += 0.08; signals.caps = 1; }
+  const words = text.split(/\s+/).filter(Boolean);
+  if (
+    words.length === 1 &&
+    isTopRegion(line, m) &&
+    fontRatio(line, m) >= Math.max(1.5, THRESHOLDS.largeFontRatio + 0.25) &&
+    !HAS_DIGIT.test(text)
+  ) {
+    score += 0.35;
+    signals.logoBrand = 1;
+  }
   if (anyWord(lower, ADDRESS_KEYWORDS)) score -= 0.15; // adres satırı şirket değil
   return { score: clamp(score), signals };
 }

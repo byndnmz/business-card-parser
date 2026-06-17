@@ -64,6 +64,8 @@ def health():
     return {
         "status": "ok",
         "zbar": qrmod.has_zbar(),
+        "opencv_qr": qrmod.has_opencv_qr(),
+        "qr_decoder": qrmod.has_qr_decoder(),
         "engine_loaded": ocr_engine.is_loaded(),
     }
 

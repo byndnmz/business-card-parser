@@ -17,30 +17,80 @@ try:
 except Exception:  # pyzbar/libzbar yoksa QR atlanır
     _HAS_ZBAR = False
 
+try:
+    import cv2  # type: ignore
+    _HAS_OPENCV_QR = True
+except Exception:
+    cv2 = None  # type: ignore
+    _HAS_OPENCV_QR = False
+
 
 def has_zbar() -> bool:
     return _HAS_ZBAR
 
 
+def has_opencv_qr() -> bool:
+    return _HAS_OPENCV_QR
+
+
+def has_qr_decoder() -> bool:
+    return _HAS_ZBAR or _HAS_OPENCV_QR
+
+
 def find_and_decode(bgr_image) -> Optional[Dict]:
     """Görselde ilk QR'ı bulup parse eder. Yoksa None."""
-    if not _HAS_ZBAR:
-        return None
-    try:
-        results = _zbar_decode(bgr_image)
-    except Exception:
-        return None
-    for r in results:
+    if _HAS_ZBAR:
         try:
-            raw = r.data.decode("utf-8", errors="replace").strip()
+            results = _zbar_decode(bgr_image)
         except Exception:
-            continue
-        if not raw:
-            continue
-        parsed = parse_payload(raw)
-        if parsed and parsed.get("fields"):
-            return parsed
+            results = []
+        for r in results:
+            try:
+                raw = r.data.decode("utf-8", errors="replace").strip()
+            except Exception:
+                continue
+            parsed = _parse_nonempty(raw)
+            if parsed:
+                return parsed
+
+    if _HAS_OPENCV_QR:
+        for raw in _opencv_decode(bgr_image):
+            parsed = _parse_nonempty(raw)
+            if parsed:
+                return parsed
     return None
+
+
+def _parse_nonempty(raw: str) -> Optional[Dict]:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    parsed = parse_payload(raw)
+    if parsed and parsed.get("fields"):
+        return parsed
+    return None
+
+
+def _opencv_decode(bgr_image) -> list[str]:
+    if not _HAS_OPENCV_QR or cv2 is None:
+        return []
+    detector = cv2.QRCodeDetector()
+    out: list[str] = []
+    try:
+        ok, decoded, _, _ = detector.detectAndDecodeMulti(bgr_image)
+        if ok and decoded:
+            out.extend([str(x).strip() for x in decoded if str(x).strip()])
+    except Exception:
+        pass
+    if out:
+        return out
+    try:
+        raw, _, _ = detector.detectAndDecode(bgr_image)
+        if raw:
+            out.append(str(raw).strip())
+    except Exception:
+        pass
+    return out
 
 
 def parse_payload(raw: str) -> Optional[Dict]:

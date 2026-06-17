@@ -1,10 +1,13 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { createPersistence, getAdminAuth, type Persistence } from "./src/server/firestore-admin";
+import { uploadCardImage, readCardImageBase64, streamCardImage, deleteCardImage, storageEnabled } from "./src/server/storage";
+import { ensureRapidOcrSidecar } from "./src/server/rapidocr-sidecar";
 import { generateSecret, verifyTOTP, otpauthURI } from "./src/server/totp";
 import { rebuildChain, verifyChain, computeHash, GENESIS_HASH, type ChainEntry } from "./src/server/audit-chain";
 import {
@@ -710,6 +713,7 @@ app.get("/api/admin/dashboard", requireAuth, requireRole(["admin", "auditor"]), 
       uptime: process.uptime(),
       dbConnected: persistence.enabled,
       persistenceSource: persistence.source,
+      storageMode: storageEnabled() ? "cloud-storage" : "inline-fallback",
       firewallActive: true,
       ocrProvider: process.env.OCR_PROVIDER || "rapidocr",
       ocrModel: (() => {
@@ -859,6 +863,32 @@ app.get("/api/cards/:id", requireAuth, (req, res) => {
   });
 });
 
+app.get("/api/cards/:id/image", requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const card = dbBusinessCards.find(c => c.id === id) as any;
+  if (!card) {
+    return res.status(404).json({ error: "Kart bulunamadı." });
+  }
+  if (actor(req).role === "user" && card.owner_user_id !== actor(req).id) {
+    return res.status(403).json({ error: "Yetkisiz erişim. Bu karta erişim izniniz yok." });
+  }
+
+  if (card.storage_path) {
+    const streamed = await streamCardImage(card.storage_path, res);
+    if (streamed || res.headersSent) return;
+  }
+
+  const imageUrl = String(card.image_url || "");
+  const dataMatch = imageUrl.match(/^data:([^;]+);base64,(.*)$/);
+  if (dataMatch) {
+    res.setHeader("Content-Type", dataMatch[1]);
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    return res.send(Buffer.from(dataMatch[2], "base64"));
+  }
+
+  return res.status(404).json({ error: "Kart görseli bulunamadı." });
+});
+
 app.delete("/api/cards/:id", requireAuth, (req, res) => {
   const { id } = req.params;
   const cardIndex = dbBusinessCards.findIndex(c => c.id === id);
@@ -876,6 +906,7 @@ app.delete("/api/cards/:id", requireAuth, (req, res) => {
     }
     
     // Remove card
+    if ((card as any).storage_path) void deleteCardImage((card as any).storage_path);
     dbBusinessCards.splice(cardIndex, 1);
     removeFromFirestore("business_cards", id);
     
@@ -938,19 +969,28 @@ function buildRecordsFromParsed(opts: {
   parsed: ParsedCard;
   ownerId: string;
   source: string;
-  imageDataUrl: string;
+  imageDataUrl?: string;
+  imageUrl?: string;
+  storagePath?: string;
+  imageHash?: string;
+  mimeType?: string;
   batchId: string;
   status: string;
   filename?: string;
 }) {
-  const { parsed, ownerId, source, imageDataUrl, batchId, status, filename } = opts;
+  const { parsed, ownerId, source, batchId, status, filename } = opts;
+  const imageUrl = opts.imageUrl ?? opts.imageDataUrl ?? "";
   const uid = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
   const cardId = `card-${uid}`;
 
   const card = {
     id: cardId,
     owner_user_id: ownerId,
-    image_url: imageDataUrl,
+    image_url: imageUrl,
+    storage_path: opts.storagePath || "",
+    image_hash: opts.imageHash || "",
+    mime_type: opts.mimeType || "",
+    parser_version: PARSER_VERSION,
     processing_status: status,
     confidence_score: parsed.confidence_score,
     source_type: source,
@@ -1002,23 +1042,99 @@ function buildRecordsFromParsed(opts: {
   return { card, fields, contact };
 }
 
-// --- ASYNC OCR İŞ KUYRUĞU (in-process) -------------------------------------
-// Upload ANINDA "processing" kart döner; OCR ARKA PLANDA çalışıp kaydı günceller.
-// Frontend GET /api/cards/:id ile durumu sorgular (polling). Böylece OCR'ın süresi
-// HTTP isteğini bloklamaz. (Tek-instance pilot için uygundur; çok-instance + yüksek
-// hacimde Cloud Tasks + ayrı worker'a taşınmalı.)
+// --- OCR İŞLEME --------------------------------------------------------------
+// Upload anında "processing" kart döner. OCR, frontend'in hemen açtığı
+// /api/cards/:id/process isteği içinde çalışır. Cloud Run/App Hosting request-based
+// CPU verdiği için response-sonrası arka plan işinden çok daha hızlı ve ücretsiz kalır.
+// Aynı anda çalışan OCR sayısı sınırlıdır; 1 CPU'da paralel OCR birbirini boğmasın.
 
-/** "processing" durumunda kart + boş contact oluşturur (kararlı id'ler). */
+const OCR_CONCURRENCY = Math.max(1, Number(process.env.OCR_CONCURRENCY || 1));
+const PARSER_VERSION = "rapidocr-semantic-2026-06-17-v2";
+let activeOcrJobs = 0;
+const ocrWaiters: Array<() => void> = [];
+const activeCardProcesses = new Map<string, Promise<void>>();
+
+async function runWithOcrSemaphore<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeOcrJobs >= OCR_CONCURRENCY) {
+    await new Promise<void>((resolve) => ocrWaiters.push(resolve));
+  }
+  activeOcrJobs += 1;
+  try {
+    return await fn();
+  } finally {
+    activeOcrJobs -= 1;
+    ocrWaiters.shift()?.();
+  }
+}
+
+function cleanBase64(imageBase64: string): string {
+  return imageBase64.startsWith("data:") ? imageBase64.split(",")[1] ?? "" : imageBase64;
+}
+
+function imageHash(imageBase64: string): string {
+  return crypto.createHash("sha256").update(Buffer.from(cleanBase64(imageBase64), "base64")).digest("hex");
+}
+
+function cardPayload(cardId: string) {
+  const card = dbBusinessCards.find((c) => c.id === cardId);
+  if (!card) return null;
+  const fields = dbBusinessCardFields.filter(f => f.business_card_id === card.id);
+  const contact = dbContacts.find(c => c.business_card_id === card.id && !c.is_deleted);
+  const mappings = dbContactTags.filter(m => m.contact_id === contact?.id);
+  const tags = mappings.map(m => dbTags.find(t => t.id === m.tag_id)).filter(Boolean);
+  return { card, fields, contact, tags };
+}
+
+async function imageBase64ForCard(card: any): Promise<string | null> {
+  const url = String(card.image_url || "");
+  const dataMatch = url.match(/^data:[^;]+;base64,(.*)$/);
+  if (dataMatch) return dataMatch[1];
+  if (card.storage_path) return await readCardImageBase64(card.storage_path);
+  return null;
+}
+
+function cachedCardFor(ownerId: string, hash: string) {
+  if (!hash) return null;
+  const card = dbBusinessCards.find((c: any) =>
+    c.owner_user_id === ownerId &&
+    c.image_hash === hash &&
+    c.parser_version === PARSER_VERSION &&
+    c.processing_status !== "processing" &&
+    c.processing_status !== "failed"
+  );
+  return card ? cardPayload(card.id) : null;
+}
+
+async function prepareCardImage(cardId: string, imageBase64: string, mimeType: string) {
+  const objectPath = `card-images/${cardId}`;
+  if (await uploadCardImage(objectPath, imageBase64, mimeType)) {
+    return {
+      imageUrl: `/api/cards/${cardId}/image`,
+      storagePath: objectPath,
+      storageMode: "cloud" as const,
+    };
+  }
+
+  return {
+    imageUrl: imageBase64.startsWith("data:")
+      ? imageBase64
+      : `data:${mimeType};base64,${imageBase64}`,
+    storagePath: "",
+    storageMode: "inline" as const,
+  };
+}
+
+/** "processing" durumunda kart + boş contact oluşturur (id'ler ve görsel URL'i dışarıdan). */
 function createProcessingCard(opts: {
-  ownerId: string; source: string; imageDataUrl: string; batchId: string; filename?: string;
+  cardId: string; contactId: string; ownerId: string; source: string;
+  imageUrl: string; storagePath: string; imageHash: string; mimeType: string; batchId: string; filename?: string;
 }) {
-  const { ownerId, source, imageDataUrl, batchId, filename } = opts;
-  const uid = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-  const cardId = `card-${uid}`;
-  const contactId = `contact-${uid}`;
+  const { cardId, contactId, ownerId, source, imageUrl, storagePath, imageHash, mimeType, batchId, filename } = opts;
   const now = new Date().toISOString();
   const card: any = {
-    id: cardId, owner_user_id: ownerId, image_url: imageDataUrl,
+    id: cardId, owner_user_id: ownerId, image_url: imageUrl, storage_path: storagePath,
+    image_hash: imageHash, mime_type: mimeType,
+    parser_version: PARSER_VERSION,
     processing_status: "processing", confidence_score: 0, source_type: source,
     batch_id: batchId, original_filename: sanitizeString(filename, 200),
     created_at: now, updated_at: now,
@@ -1033,19 +1149,23 @@ function createProcessingCard(opts: {
   saveToFirestore("business_cards", cardId, card);
   dbContacts.push(contact);
   saveToFirestore("contacts", contactId, contact);
-  return { card, contact, cardId, contactId, uid };
+  return { card, contact };
 }
 
 /** Arka planda OCR çalıştırır ve "processing" kaydı sonuçla günceller. */
 async function processCardOcr(opts: {
-  cardId: string; contactId: string; uid: string; imageBase64: string; mimeType: string;
+  cardId: string; contactId: string; uid: string; imageBase64?: string; mimeType: string;
   actorId: string; ip: string; ua: string; filename?: string; sizeBytes: number;
 }) {
   const { cardId, contactId, uid, imageBase64, mimeType, actorId, ip, ua, filename, sizeBytes } = opts;
   const card = dbBusinessCards.find((c) => c.id === cardId) as any;
   if (!card) return;
+  if (card.processing_status !== "processing") return;
   try {
-    const parsed = await parseBusinessCard(ai, { base64: imageBase64, mimeType });
+    const base64 = imageBase64 || await imageBase64ForCard(card);
+    if (!base64) throw new Error("Kart görseli OCR için okunamadı.");
+
+    const parsed = await runWithOcrSemaphore(() => parseBusinessCard(ai, { base64, mimeType }));
     const duplicateOf = detectDuplicate(dbContacts as any, {
       email: parsed.email, phone: parsed.phone, full_name: parsed.full_name, company: parsed.company,
     });
@@ -1088,7 +1208,7 @@ async function processCardOcr(opts: {
     }
 
     createAuditLog(actorId, "OCR_COMPLETED", "business_cards", cardId, null,
-      { filename, sizeKb: Math.round(sizeBytes / 1024), provider: parsed.provider, confidence: parsed.confidence_score, duplicateOf, status },
+      { filename, sizeKb: Math.round(sizeBytes / 1024), provider: parsed.provider, confidence: parsed.confidence_score, duplicateOf, status, activeOcrJobs },
       ip, ua);
   } catch (err) {
     console.error("[OCR-JOB] başarısız:", err);
@@ -1116,28 +1236,85 @@ app.post("/api/cards/upload", requireAuth, uploadLimiter, async (req, res) => {
     return res.status(400).json({ error: "Geçersiz kaynak (source) değeri." });
   }
 
-  const imageDataUrl = imageBase64.startsWith("data:")
-    ? imageBase64
-    : `data:${check.detectedType};base64,${imageBase64}`;
-
   const actorId = actor(req).id;
   const ip = clientIp(req);
   const ua = (req.headers["user-agent"] as string) || "Web UI";
+  const hash = imageHash(imageBase64);
+  const cached = cachedCardFor(actorId, hash);
+  if (cached) {
+    createAuditLog(actorId, "UPLOAD_CACHE_HIT", "business_cards", (cached.card as any).id, null,
+      { filename, sizeKb: Math.round(check.sizeBytes / 1024) }, ip, ua);
+    return res.json({ ...cached, status: "cached", cached: true });
+  }
+
+  const uid = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+  const cardId = `card-${uid}`;
+  const contactId = `contact-${uid}`;
+
+  // Görseli Cloud Storage'a koymayı DENE (Firestore'a base64 yazmamak için);
+  // olmazsa data-URL'e düş (upload asla kırılmaz).
+  const preparedImage = await prepareCardImage(cardId, imageBase64, check.detectedType!);
 
   // 1) Kaydı "processing" olarak oluştur ve ANINDA dön.
-  const { card, contact, cardId, contactId, uid } = createProcessingCard({
-    ownerId: actorId, source, imageDataUrl, batchId, filename,
+  const { card, contact } = createProcessingCard({
+    cardId,
+    contactId,
+    ownerId: actorId,
+    source,
+    imageUrl: preparedImage.imageUrl,
+    storagePath: preparedImage.storagePath,
+    imageHash: hash,
+    mimeType: check.detectedType!,
+    batchId,
+    filename,
   });
   createAuditLog(actorId, "UPLOAD_QUEUED", "business_cards", cardId, null,
-    { filename, sizeKb: Math.round(check.sizeBytes / 1024) }, ip, ua);
+    { filename, sizeKb: Math.round(check.sizeBytes / 1024), storage: preparedImage.storageMode }, ip, ua);
 
-  res.json({ card, contact, status: "processing" });
+  res.json({ card, contact, fields: [], status: "processing", cached: false });
+});
 
-  // 2) OCR'ı ARKA PLANDA çalıştır (yanıtı bloklamaz).
-  void processCardOcr({
-    cardId, contactId, uid, imageBase64, mimeType: check.detectedType!,
-    actorId, ip, ua, filename, sizeBytes: check.sizeBytes,
-  });
+// OCR'ı aktif HTTP isteği içinde çalıştırır. Cloud Run/App Hosting request-based CPU
+// davranışında response-sonrası background işlerinden daha hızlıdır.
+app.post("/api/cards/:id/process", requireAuth, ocrLimiter, async (req, res) => {
+  const { id } = req.params;
+  const card = dbBusinessCards.find(c => c.id === id) as any;
+  if (!card) return res.status(404).json({ error: "Kart bulunamadı." });
+  if (actor(req).role === "user" && card.owner_user_id !== actor(req).id) {
+    return res.status(403).json({ error: "Yetkisiz erişim. Bu karta erişim izniniz yok." });
+  }
+
+  if (card.processing_status !== "processing") {
+    const payload = cardPayload(id);
+    if (!payload) return res.status(404).json({ error: "Kart bulunamadı." });
+    return res.json({ ...payload, status: card.processing_status });
+  }
+
+  let job = activeCardProcesses.get(id);
+  if (!job) {
+    const contact = dbContacts.find(c => c.business_card_id === id && !c.is_deleted) as any;
+    const uid = id.replace(/^card-/, "");
+    const ip = clientIp(req);
+    const ua = (req.headers["user-agent"] as string) || "Web UI";
+    job = processCardOcr({
+      cardId: id,
+      contactId: contact?.id || `contact-${uid}`,
+      uid,
+      imageBase64: typeof req.body?.imageBase64 === "string" ? req.body.imageBase64 : undefined,
+      mimeType: sanitizeString(req.body?.mimeType, 80) || card.mime_type || "image/jpeg",
+      actorId: actor(req).id,
+      ip,
+      ua,
+      filename: card.original_filename,
+      sizeBytes: Number(req.body?.sizeBytes || 0),
+    }).finally(() => activeCardProcesses.delete(id));
+    activeCardProcesses.set(id, job);
+  }
+
+  await job;
+  const payload = cardPayload(id);
+  if (!payload) return res.status(404).json({ error: "Kart bulunamadı." });
+  res.json({ ...payload, status: (payload.card as any).processing_status });
 });
 
 // Toplu yükleme — her dosya için GERÇEK OCR çalıştırır; geçersiz dosyalar
@@ -1166,7 +1343,14 @@ app.post("/api/cards/batch-upload", requireAuth, uploadLimiter, async (req, res)
       continue;
     }
     try {
-      const parsed = await parseBusinessCard(ai, { base64: imageBase64, mimeType: check.detectedType! });
+      const hash = imageHash(imageBase64);
+      const cached = cachedCardFor(ownerId, hash);
+      if (cached) {
+        processedCards.push({ ...(cached as any), duplicateOf: null, warnings: [], storage: "cache", cached: true });
+        continue;
+      }
+
+      const parsed = await runWithOcrSemaphore(() => parseBusinessCard(ai, { base64: imageBase64, mimeType: check.detectedType! }));
       const duplicateOf = detectDuplicate(dbContacts as any, {
         email: parsed.email,
         phone: parsed.phone,
@@ -1177,20 +1361,27 @@ app.post("/api/cards/batch-upload", requireAuth, uploadLimiter, async (req, res)
         duplicateOf || parsed.confidence_score < 0.7 || parsed.warnings.length > 0
           ? "manual_review"
           : "pending_verification";
-      const imageDataUrl = imageBase64.startsWith("data:")
-        ? imageBase64
-        : `data:${check.detectedType};base64,${imageBase64}`;
-
       const { card, fields, contact } = buildRecordsFromParsed({
-        parsed, ownerId, source: "web", imageDataUrl, batchId, status, filename,
+        parsed,
+        ownerId,
+        source: "web",
+        imageUrl: "",
+        imageHash: hash,
+        mimeType: check.detectedType!,
+        batchId,
+        status,
+        filename,
       });
+      const preparedImage = await prepareCardImage(card.id, imageBase64, check.detectedType!);
+      (card as any).image_url = preparedImage.imageUrl;
+      (card as any).storage_path = preparedImage.storagePath;
       dbBusinessCards.push(card as any);
       saveToFirestore("business_cards", card.id, card);
       dbBusinessCardFields.push(...(fields as any));
       for (const f of fields) saveToFirestore("business_card_fields", f.id, f);
       dbContacts.push(contact as any);
       saveToFirestore("contacts", contact.id, contact);
-      processedCards.push({ card, contact, fields, duplicateOf, warnings: parsed.warnings });
+      processedCards.push({ card, contact, fields, duplicateOf, warnings: parsed.warnings, storage: preparedImage.storageMode });
     } catch (err) {
       console.error("[BATCH] Dosya işlenemedi:", err);
       failures.push({ filename, error: "OCR işleme hatası" });
@@ -1660,6 +1851,10 @@ app.use((err: any, _req: any, res: any, _next: any) => {
 
 // Serve files in production/dev
 async function startServer() {
+  // Yerel geliştirmede RapidOCR sidecar'ı Node ile birlikte ayağa kaldır.
+  // Üretimde Docker start.sh veya ayrı OCR servisi sorumludur.
+  await ensureRapidOcrSidecar();
+
   // Synchronize dynamic cache from real Firebase Firestore Instance
   await initFirebaseAndSeed();
   // Parolalı yönetici (admin) hesabını garanti et — gerçek login için.

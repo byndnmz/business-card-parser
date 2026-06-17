@@ -41,6 +41,9 @@ export const COMPANY_SECTOR_WORDS = [
   "otomotiv", "makine", "endüstri", "technology", "technologies", "systems",
   "electronics", "software", "defense", "defence", "aerospace", "solutions",
   "engineering", "industries", "consulting", "logistics", "energy",
+  "mobilya", "dekorasyon", "ahsap", "ahÅŸap", "egzoz", "egsoz", "baski", "baskÄ±",
+  "matbaa", "tuning", "chip", "dpf", "egr", "partikul", "partikÃ¼l", "katalizor",
+  "katalizÃ¶r", "servis", "service", "merkez", "merkezi",
 ];
 
 // --- DEPARTMAN (department) -------------------------------------------------

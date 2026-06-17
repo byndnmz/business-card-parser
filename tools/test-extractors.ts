@@ -9,6 +9,7 @@ import { buildLayout } from "../src/server/layout/reconstruct";
 import { extractAllFields } from "../src/server/scoring";
 import { crossValidate } from "../src/server/cross-validate";
 import { assembleCard } from "../src/server/assemble";
+import { validateAndScore } from "../src/server/parser";
 import { mergeQrWithOcr, identityConflict } from "../src/server/ocr/qr-merge";
 
 let pass = 0, fail = 0;
@@ -143,6 +144,46 @@ ok("donuk kartta sirket tam adiyla eslesti", rb.company === "BEYOND TECHNOLOGIES
 
 // --- 8) QR FARKLI kişiye aitse yok sayılmalı (karttaki yazı esas) ---
 console.log("\n[QR KİMLİK ÇAKIŞMASI]");
+// --- 8) Kisi adi olmayan servis karti: hizmet satiri isim yapilmamali ---
+console.log("\n[NO PERSON SERVICE CARD]");
+const serviceOnly: OcrBox[] = [
+  ...line(["Ustaoglu"], 140, 155, 145, 0.99),
+  ...line(["Egzoz"], 320, 240, 42, 0.99),
+  ...line(["PARTIKUL", "&", "KATALIZOR", "0545", "360", "55", "49", "0544", "855", "02", "19", "0362", "228", "08", "56"], 200, 270, 48, 0.96),
+  ...line(["DPF", "/", "EGR", "Gulsan", "Sn.", "Sit.", "No:", "76", "Canik", "/", "SAMSUN"], 320, 345, 42, 0.98),
+  ...line(["COZUM", "MERKEZI", "CHIP", "TUNING"], 300, 405, 70, 0.99),
+];
+const svc = runCard(serviceOnly, 1180, 920).card;
+ok("servis kartinda sahte isim basilmaz", svc.full_name === "");
+ok("logo + sektor satiri sirket olur", /Ustaoglu Egzoz/i.test(svc.company));
+ok("bitisik coklu telefonda sabit alinir", svc.phone === "+903622280856");
+ok("bitisik coklu telefonda cep ayrilir", svc.mobile_phone === "+905453605549");
+
+// --- 9) Sektor kelimesi olan buyuk logo isim degil, sirket olmali ---
+console.log("\n[SECTOR LOGO VS NAME]");
+const furniture: OcrBox[] = [
+  ...line(["AKSU", "MOBILYA"], 60, 220, 90, 0.91),
+  ...line(["SEYHAN", "AKSU"], 200, 340, 24, 0.96),
+  ...line(["CumhuriyetCd.Ege", "Sk.INo:16", "Osmangazi/BURSA"], 160, 445, 18, 0.95),
+  ...line(["02242240000"], 250, 500, 16, 0.99),
+];
+const furn = runCard(furniture, 582, 640).card;
+ok("sektor logolu satir sirket olur", furn.company === "AKSU MOBILYA");
+ok("alt satirdaki kisi adi korunur", furn.full_name === "SEYHAN AKSU");
+
+// --- 10) Tek OCR satirina birlesen isim + unvan satir icinden ayrilir ---
+console.log("\n[INLINE NAME TITLE]");
+const inlineCard: OcrBox[] = [
+  ...line(["baskimnet.com"], 240, 430, 86, 0.99),
+  ...line(["hayata", "ig", "EYL\u00dcL", "BA\u015eARAN", "Genel", "Koordinat\u014dr"], 360, 485, 54, 0.96),
+  ...line(["bilgi@baskimnet.com"], 760, 650, 40, 0.97),
+  ...line(["0(312)", "496", "11", "66"], 540, 615, 40, 0.97),
+];
+const inline = validateAndScore(runCard(inlineCard, 1200, 1200).card);
+ok("satir icinden isim ayrilir", inline.full_name === "EYL\u00dcL BA\u015eARAN");
+ok("satir icinden unvan ayrilir", inline.title === "Genel Koordinat\u00f6r");
+ok("domain sirket alanina tamamlanir", inline.company === "BASKIMNET");
+
 const fh = (name: string, value: string, conf = 0.9): FieldHit =>
   ({ field_name: name as any, value, confidence: conf, bbox: { x: 0, y: 0, width: 0, height: 0 }, source: "ocr", valid: true });
 

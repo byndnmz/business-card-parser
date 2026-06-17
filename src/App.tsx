@@ -35,6 +35,7 @@ import QrCodeScannerModal from "./components/QrCodeScannerModal";
 import LoginScreen from "./components/LoginScreen";
 import MfaSetupModal from "./components/MfaSetupModal";
 import { CardWithRelationships, User, AuditLog, Batch, Tag, Contact } from "./types";
+import { isSupportedUploadFile, prepareImageForUpload, type PreparedUpload } from "./client/upload-prep";
 import { testConnection } from "./firebase";
 
 export default function App() {
@@ -226,19 +227,141 @@ export default function App() {
   };
 
   const handleImageFileSelection = (file: File) => {
-    if (!file.type.startsWith("image/") && file.type !== "application/pdf") {
+    if (!isSupportedUploadFile(file)) {
       alert("Yalnızca PNG, JPEG, WEBP görsel dosyaları ile PDF belgeleri yüklenebilir.");
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      if (event.target?.result) {
-        const base64Content = (event.target.result as string).split(",")[1];
-        await uploadCardBase64(base64Content, file.name, file.type);
+    void (async () => {
+      setUploadMsg(`"${file.name}" hazirlaniyor...`);
+      setIsUploading(true);
+      try {
+        const prepared = await prepareImageForUpload(file);
+        await uploadPreparedCard(prepared);
+      } catch (err) {
+        console.error(err);
+        alert("Gorsel hazirlanamadi. Lutfen farkli veya daha net bir dosya deneyin.");
+        setIsUploading(false);
+        setUploadMsg("");
       }
-    };
-    reader.readAsDataURL(file);
+    })();
+  };
+
+  const mergeQrFieldsIntoCard = (card: CardWithRelationships, qrFields?: Record<string, string>): CardWithRelationships => {
+    if (!qrFields || !Object.keys(qrFields).length) return card;
+    const keys: Array<"full_name" | "title" | "company" | "department" | "email" | "phone" | "mobile_phone" | "website" | "address" | "city" | "country" | "linkedin"> = [
+      "full_name", "title", "company", "department", "email", "phone", "mobile_phone", "website", "address", "city", "country", "linkedin"
+    ];
+    const contact = { ...(card.contact || {}) } as Contact;
+    for (const key of keys) {
+      const value = qrFields[key];
+      if (value && !(contact as any)[key]) (contact as any)[key] = value;
+    }
+    if (contact.full_name) {
+      const parts = contact.full_name.split(" ");
+      contact.first_name ||= parts[0] || "";
+      contact.last_name ||= parts.slice(1).join(" ") || "";
+    }
+    contact.notes = contact.notes || "QR koddan aninda on-dolduruldu; OCR sonucu ile dogrulanacak.";
+
+    const fields = [...(card.fields || [])];
+    for (const key of keys) {
+      const value = qrFields[key];
+      if (!value) continue;
+      const existing = fields.findIndex(f => f.field_name === key);
+      if (existing >= 0) {
+        fields[existing] = { ...fields[existing], field_value: fields[existing].field_value || value };
+      } else {
+        fields.push({
+          id: `client-qr-${key}-${Date.now()}`,
+          business_card_id: card.id,
+          field_name: key,
+          field_value: value,
+          confidence_score: 1,
+          bounding_box_x: 0,
+          bounding_box_y: 0,
+          bounding_box_width: 0,
+          bounding_box_height: 0,
+          is_verified: false,
+        });
+      }
+    }
+    return { ...card, contact, fields };
+  };
+
+  const cardFromApiPayload = (data: any, qrFields?: Record<string, string>): CardWithRelationships => (
+    mergeQrFieldsIntoCard({
+      ...data.card,
+      fields: data.fields || [],
+      contact: data.contact,
+      tags: data.tags || [],
+    }, qrFields)
+  );
+
+  const processUploadedCard = async (cardId: string, prepared: PreparedUpload) => {
+    setUploadMsg(`"${prepared.filename}" OCR ile isleniyor...`);
+    const response = await fetch(`/api/cards/${cardId}/process`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mimeType: prepared.mimeType, sizeBytes: prepared.processedBytes }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "OCR isleme hatasi.");
+    setSelectedCard(cardFromApiPayload(data, prepared.qrFields));
+    await fetchAllData();
+    const st = data?.card?.processing_status;
+    if (st === "failed") {
+      alert("OCR basarisiz oldu. Lutfen daha net bir gorselle tekrar deneyin.");
+    } else if (st === "manual_review") {
+      alert("Tarama tamamlandi; bazi alanlar manuel kontrol gerektirebilir.");
+    } else {
+      alert("Kartvizit basariyla tarandi.");
+    }
+  };
+
+  const uploadPreparedCard = async (prepared: PreparedUpload) => {
+    const ratio = prepared.originalBytes
+      ? Math.max(0, Math.round((1 - prepared.processedBytes / prepared.originalBytes) * 100))
+      : 0;
+    setUploadMsg(`"${prepared.filename}" yukleniyor${prepared.resized && ratio > 0 ? ` (${ratio}% kucultuldu)` : ""}...`);
+    try {
+      const response = await fetch("/api/cards/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageBase64: prepared.base64,
+          filename: prepared.filename,
+          mimeType: prepared.mimeType,
+          imageHash: prepared.imageHash,
+          source: "web"
+        })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.card) {
+        throw new Error(data.error || "Gorsel islenemedi.");
+      }
+
+      setSelectedCard(cardFromApiPayload(data, prepared.qrFields));
+      setActiveTab("scanner");
+      await fetchAllData();
+      await logAuditPayload(data.cached ? "WEB_FILE_UPLOADER_CACHE_HIT" : "WEB_FILE_UPLOADER_QUEUED", {
+        filename: prepared.filename,
+        originalBytes: prepared.originalBytes,
+        processedBytes: prepared.processedBytes,
+        clientQr: !!prepared.qrFields,
+      });
+      if (data.cached || data.card.processing_status !== "processing") {
+        alert("Bu gorsel daha once islenmis; sonuc cache'den getirildi.");
+      } else {
+        await processUploadedCard(data.card.id, prepared);
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert(`Yukleme basarisiz: ${err?.message || "Sunucuyla baglanti koptu."}`);
+    } finally {
+      setIsUploading(false);
+      setUploadMsg("");
+    }
   };
 
   const uploadCardBase64 = async (base64: string, filename: string, mime: string) => {

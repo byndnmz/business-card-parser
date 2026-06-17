@@ -13,7 +13,7 @@
 import type { LayoutModel, LayoutLine, FieldHit, BoundingBox } from "./schema";
 import { THRESHOLDS } from "./config/thresholds";
 import { ADDRESS_KEYWORDS, COMPANY_SECTOR_WORDS } from "./config/dictionaries";
-import { trLower, asciiFold, makeHit, lineBox, containsWord } from "./extractors/util";
+import { trLower, asciiFold, makeHit, lineBox, subBox, containsWord, isCapWord, isMostlyCaps } from "./extractors/util";
 import { toPercentBox } from "./layout/reconstruct";
 import { extractEmail } from "./extractors/email";
 import { extractPhones } from "./extractors/phone";
@@ -68,7 +68,36 @@ function pickBest(cands: Cand[], assigned: Set<number>, threshold: number): Cand
 }
 
 function normalizeTitleValue(value: string): string {
-  return value.replace(/\bB\$k\.?/gi, "B\u015fk.");
+  return value
+    .replace(/\u014d/g, "\u00f6")
+    .replace(/\u014c/g, "\u00d6")
+    .replace(/\bB\$k\.?/gi, "B\u015fk.");
+}
+
+const INLINE_TITLE_RE = /\b((?:genel\s+)?(?:koordinat[o\u00f6\u014d]r|m[u\u00fc]d[u\u00fc]r|direkt[o\u00f6]r|uzman|m[u\u00fc]hendis|lider|developer|manager|specialist|ceo|cto|cfo|coo))\b/i;
+
+function likelyNameWord(word: string): boolean {
+  const cleaned = word.replace(/^[^\p{L}]+|[^\p{L}.]+$/gu, "");
+  if (!cleaned) return false;
+  return isCapWord(cleaned) || isMostlyCaps(cleaned) || /^(Dr|Prof|Do[c\u00e7]|Av|M[u\u00fc]h)\.?$/i.test(cleaned);
+}
+
+function inlineNameTitle(line: LayoutLine): { name?: string; title?: string; titleRaw?: string } | null {
+  const match = line.text.match(INLINE_TITLE_RE);
+  if (!match || match.index === undefined) return null;
+
+  const before = line.text.slice(0, match.index).trim();
+  const titleRaw = match[1].trim();
+  const words = before.split(/\s+/).filter(Boolean);
+  const picked: string[] = [];
+  for (let i = words.length - 1; i >= 0; i--) {
+    if (!likelyNameWord(words[i])) break;
+    picked.unshift(words[i].replace(/^[^\p{L}]+|[^\p{L}.]+$/gu, ""));
+    if (picked.length >= THRESHOLDS.nameMaxWords) break;
+  }
+  const name = picked.length >= THRESHOLDS.nameMinWords ? picked.join(" ") : "";
+  if (!name && !titleRaw) return null;
+  return { name, title: normalizeTitleValue(titleRaw), titleRaw };
 }
 
 const COMPANY_CONTINUATIONS = [
@@ -223,6 +252,20 @@ export function extractAllFields(m: LayoutModel): ExtractionOutput {
   m.lines.forEach((line, i) => { if (isDeterministicLine(line)) consumed.add(i); });
 
   // --- 3) Semantik adayları skorla ---
+  m.lines.forEach((line, i) => {
+    if (consumed.has(i)) return;
+    const inline = inlineNameTitle(line);
+    if (!inline) return;
+    const conf = Math.max(0.78, Math.min(0.96, line.confidence || THRESHOLDS.fallbackWordConfidence));
+    if (inline.name) {
+      hits.push(makeHit("full_name", inline.name, conf, subBox(line, line.text, inline.name, m), "inline:name-title"));
+    }
+    if (inline.title && inline.titleRaw) {
+      hits.push(makeHit("title", inline.title, conf, subBox(line, line.text, inline.titleRaw, m), "inline:name-title"));
+    }
+    consumed.add(i);
+  });
+
   const titleC: Cand[] = [], deptC: Cand[] = [], companyC: Cand[] = [], nameC: Cand[] = [];
   m.lines.forEach((line, i) => {
     if (consumed.has(i)) return;
@@ -264,7 +307,14 @@ export function extractAllFields(m: LayoutModel): ExtractionOutput {
   if (!bestName) warnings.push("Ad/Soyad yeterli güvenle ayrıştırılamadı — manuel kontrol önerilir.");
   if (!bestCompany) warnings.push("Şirket yeterli güvenle ayrıştırılamadı.");
 
-  return { hits, notes, warnings };
+  const finalWarnings = warnings.filter((warning) => {
+    const folded = asciiFold(warning);
+    if (hits.some((h) => h.field_name === "full_name") && folded.includes("ad/soyad")) return false;
+    if (hits.some((h) => h.field_name === "company") && folded.includes("sirket")) return false;
+    return true;
+  });
+
+  return { hits, notes, warnings: finalWarnings };
 }
 
 /** Skoru (0..1) güven skoruna çevirir; tabanı korur. */

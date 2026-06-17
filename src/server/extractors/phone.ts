@@ -25,6 +25,35 @@ function cleanOcrPhone(raw: string): string {
   return s;
 }
 
+function kindFromDigits(digits: string): Kind {
+  const national = digits.replace(/^90/, "").replace(/^0/, "");
+  return national.startsWith("5") ? "mobile" : "fixed";
+}
+
+function pushPhone(found: Array<{ line: LayoutLine; raw: string; e164: string; kind: Kind; conf: number }>, line: LayoutLine, raw: string, kind: Kind): void {
+  const pn = parsePhoneNumberFromString(cleanOcrPhone(raw), "TR");
+  if (!pn || !pn.isValid()) return;
+  if (found.some((f) => f.e164 === pn.number)) return;
+  found.push({ line, raw, e164: pn.number, kind, conf: line.confidence || THRESHOLDS.deterministicConfidence });
+}
+
+function extractPackedTrPhones(line: LayoutLine, found: Array<{ line: LayoutLine; raw: string; e164: string; kind: Kind; conf: number }>): void {
+  const digits = line.text.replace(/\D/g, "");
+  for (let i = 0; i < digits.length; i++) {
+    const local11 = digits.slice(i, i + 11);
+    if (/^0[235]\d{9}$/.test(local11)) {
+      pushPhone(found, line, local11, kindFromDigits(local11));
+      i += 10;
+      continue;
+    }
+    const intl12 = digits.slice(i, i + 12);
+    if (/^90[235]\d{9}$/.test(intl12)) {
+      pushPhone(found, line, intl12, kindFromDigits(intl12));
+      i += 11;
+    }
+  }
+}
+
 export function extractPhones(m: LayoutModel): FieldHit[] {
   type Found = { line: LayoutLine; raw: string; e164: string; kind: Kind; conf: number };
   const found: Found[] = [];
@@ -53,6 +82,7 @@ export function extractPhones(m: LayoutModel): FieldHit[] {
       if (found.some((f) => f.e164 === pn.number)) continue;
       found.push({ line, raw, e164: pn.number, kind, conf: line.confidence || THRESHOLDS.deterministicConfidence });
     }
+    extractPackedTrPhones(line, found);
   }
 
   const hits: FieldHit[] = [];

@@ -16,6 +16,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { TesseractProvider } from "./ocr-tesseract";
 import { RapidOcrProvider } from "./ocr/rapidocr-provider";
+import { asciiFold } from "./extractors/util";
 
 // --- VERİ TİPLERİ (tek kaynak: schema.ts) -----------------------------------
 // ParsedField/ParsedCard artık schema.ts'te tanımlıdır; burada yeniden ihraç
@@ -102,7 +103,7 @@ export function validateAndScore(card: ParsedCard): ParsedCard {
     }
   }
 
-  completeKnownCompanyNames(card);
+  normalizeContactSemantics(card);
 
   // Genel güveni yeniden hesapla (alan ortalaması)
   if (card.fields.length > 0) {
@@ -111,23 +112,191 @@ export function validateAndScore(card: ParsedCard): ParsedCard {
     card.confidence_score = Number(avg.toFixed(3));
   }
 
-  card.warnings = warnings;
+  card.warnings = warnings.filter((warning) => {
+    const folded = asciiFold(warning);
+    if (card.full_name && folded.includes("ad/soyad")) return false;
+    if (card.company && folded.includes("sirket")) return false;
+    return true;
+  });
   return card;
+}
+
+function normalizeContactSemantics(card: ParsedCard): void {
+  completeKnownCompanyNames(card);
+  inferCompanyFromDomain(card);
+  stripCompanyPrefixFromName(card);
+  cleanupDepartment(card);
+}
+
+function updateField(card: ParsedCard, fieldName: string, value: string, minConfidence?: number): void {
+  const field = card.fields.find((item) => item.field_name === fieldName);
+  if (!field) return;
+  field.field_value = value;
+  if (typeof minConfidence === "number") {
+    field.confidence_score = Math.max(field.confidence_score || 0, minConfidence);
+  }
+}
+
+function removeField(card: ParsedCard, fieldName: string): void {
+  card.fields = card.fields.filter((item) => item.field_name !== fieldName);
+}
+
+function compactCore(value: string): string {
+  return asciiFold(value).toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function completeKnownCompanyNames(card: ParsedCard): void {
   const company = card.company.trim();
   const domainHints = [card.email.split("@")[1] || "", card.website]
     .map((value) => normalizeWebsite(value).toLowerCase());
-  if (company.toUpperCase() !== "BEYOND") return;
-  if (!domainHints.some((value) => value.startsWith("beyondtech.") || value.includes(".beyondtech."))) return;
+  const companyCore = compactCore(company);
+  const rules = [
+    {
+      domains: ["beyondtech"],
+      display: "BEYOND TECHNOLOGIES",
+      fragments: new Set([
+        "", "beyond", "tech", "technology", "technologies", "echnology",
+        "echnologies", "beyondtech", "beyondtechnology", "beyondtechnologies",
+      ]),
+    },
+    {
+      domains: ["yarengloballojistik", "yarengloballogistics"],
+      display: "YAREN GLOBAL LOJISTIK",
+      fragments: new Set([
+        "", "yaren", "global", "lojistik", "logistics", "globallojistik",
+        "globallogistics", "yarenglobal", "yarengloballojistik",
+        "yarengloballogistics",
+      ]),
+    },
+  ];
 
-  card.company = "BEYOND TECHNOLOGIES";
-  const companyField = card.fields.find((field) => field.field_name === "company");
-  if (companyField) {
-    companyField.field_value = card.company;
-    companyField.confidence_score = Math.max(companyField.confidence_score || 0, 0.86);
+  const matched = rules.find((rule) =>
+    domainHints.some((value) => {
+      const hostCore = compactCore(value.split(".")[0] || value);
+      return rule.domains.includes(hostCore);
+    }) && rule.fragments.has(companyCore)
+  );
+  if (!matched) return;
+
+  card.company = matched.display;
+  updateField(card, "company", card.company, 0.86);
+}
+
+const FREE_DOMAIN_CORES = new Set([
+  "gmail", "hotmail", "outlook", "yahoo", "icloud", "yandex", "protonmail", "live", "msn",
+  "companywebsite", "example",
+]);
+
+function domainCoreForCompany(card: ParsedCard): string {
+  const candidates = [card.email.split("@")[1] || "", card.website]
+    .map((value) => normalizeWebsite(value).replace(/^www\./, ""))
+    .filter(Boolean);
+  for (const value of candidates) {
+    const core = compactCore(value.split(".")[0] || "");
+    if (core.length >= 3 && !FREE_DOMAIN_CORES.has(core)) return core;
   }
+  return "";
+}
+
+function displayCompanyFromCore(core: string): string {
+  return core.toUpperCase();
+}
+
+function inferCompanyFromDomain(card: ParsedCard): void {
+  if (card.company.trim()) return;
+  const core = domainCoreForCompany(card);
+  if (!core) return;
+  card.company = displayCompanyFromCore(core);
+  card.fields.push({
+    field_name: "company",
+    field_value: card.company,
+    confidence_score: 0.72,
+    valid: true,
+    bounding_box: { x: 0, y: 0, width: 0, height: 0 },
+  });
+}
+
+function looksLikePersonName(value: string): boolean {
+  if (!value || /@|\d/.test(value)) return false;
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  if (words.length < 2 || words.length > 4) return false;
+  return words.every((word) => /^[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü'.-]+$/.test(word) || /^[A-ZÇĞİÖŞÜ]{2,}$/.test(word));
+}
+
+function hasInstitutionalCompanySignal(company: string): boolean {
+  const folded = asciiFold(company).toLowerCase();
+  return /\b(global|lojistik|logistics|teknoloji|technology|technologies|sanayi|ticaret|holding|grup|group|a\s*s|ltd|inc|corp|systems|solutions|software|engineering)\b/.test(folded);
+}
+
+function emailLocalCore(email: string): string {
+  const local = (email || "").split("@")[0] || "";
+  return compactCore(local);
+}
+
+function nameTokens(value: string): string[] {
+  return value
+    .split(/\s+/)
+    .map(compactCore)
+    .filter((token) => token.length >= 3);
+}
+
+function emailSupportsName(email: string, name: string): boolean {
+  const local = emailLocalCore(email);
+  if (local.length < 3) return false;
+  const tokens = nameTokens(name);
+  const joined = tokens.join("");
+  return tokens.some((token) => local.includes(token)) || local.includes(joined) || (local.length >= 4 && joined.includes(local));
+}
+
+function stripCompanyPrefixFromName(card: ParsedCard): void {
+  const fullName = card.full_name.trim();
+  const words = fullName.split(/\s+/).filter(Boolean);
+  if (words.length < 3) return;
+  if (!hasInstitutionalCompanySignal(card.company)) return;
+
+  const domainCores = [card.email.split("@")[1] || "", card.website]
+    .map((value) => compactCore(value.split(".")[0] || value))
+    .filter((token) => token.length >= 3);
+  const companyTokens = new Set(
+    [
+      ...card.company.split(/\s+/),
+      ...domainCores,
+    ]
+      .map(compactCore)
+      .filter((token) => token.length >= 3)
+  );
+  const firstCore = compactCore(words[0]);
+  if (!companyTokens.has(firstCore)) return;
+  if (!domainCores.some((core) => core.startsWith(firstCore) && core.length > firstCore.length + 3)) return;
+
+  const stripped = words.slice(1).join(" ");
+  if (!looksLikePersonName(stripped)) return;
+  const local = emailLocalCore(card.email);
+  if (!local || local.includes(firstCore) || !emailSupportsName(card.email, stripped)) return;
+  card.full_name = stripped;
+  updateField(card, "full_name", stripped);
+}
+
+function cleanupDepartment(card: ParsedCard): void {
+  const value = (card.department || "").trim();
+  if (!value) return;
+  const folded = asciiFold(value).toLowerCase();
+  const hasAddressSignal = /\b(no|sok|sokak|mah|mahalle|blok|kat|cad|cadde)\b|[:/]\s*/.test(folded);
+  if (!hasAddressSignal) return;
+
+  const branch = value
+    .split("/")
+    .map((part) => part.trim())
+    .reverse()
+    .find((part) => /\bsube\b/.test(asciiFold(part).toLowerCase()));
+  if (branch) {
+    card.department = branch;
+    updateField(card, "department", branch);
+    return;
+  }
+
+  card.department = "";
+  removeField(card, "department");
 }
 
 // --- DUPLICATE TESPİTİ ------------------------------------------------------
@@ -395,7 +564,7 @@ export function mockExtract(): ParsedCard {
 }
 
 /**
- * Üst düzey ayrıştırma akışı: sağlayıcıyla çıkar → başarısızsa mock → doğrula/normalize et.
+ * Üst düzey ayrıştırma akışı: sağlayıcıyla çıkar → opsiyonel yedek → doğrula/normalize et.
  * Her durumda doğrulanmış, güven-skoru yeniden hesaplanmış bir ParsedCard döner.
  */
 export async function parseBusinessCard(
@@ -413,9 +582,9 @@ export async function parseBusinessCard(
     }
   }
 
-  // 2) YEREL YEDEK: Tesseract (offline, anahtarsız) ile GERÇEK OCR dene.
-  //    Sahte (mock) veri DEĞİL — sidecar kapalıyken bile gerçek metin okunur.
-  if (provider.name !== "tesseract") {
+  // 2) Opsiyonel yerel yedek: yalnızca açıkça etkinse Tesseract'a düş.
+  //    Varsayılan ürün yolu RapidOCR'dır; sessiz Tesseract fallback istemiyoruz.
+  if (provider.name !== "tesseract" && process.env.TESSERACT_ENABLED === "true") {
     try {
       const card = await new TesseractProvider().extract(input);
       card.warnings.unshift(`Birincil OCR ('${provider.name}') kullanılamadı; yerel Tesseract yedeğine geçildi.`);
@@ -436,8 +605,8 @@ function emptyErrorCard(): ParsedCard {
     mobile_phone: "", website: "", address: "", city: "", country: "", linkedin: "",
     notes: "", confidence_score: 0, fields: [], provider: "none",
     warnings: [
-      "OCR yapılamadı: RapidOCR sidecar ve Tesseract yerel yedeği kullanılamadı. " +
-      "OCR servisini başlatın (ocr-service/) veya daha net bir görselle tekrar deneyin.",
+      "OCR yapılamadı: RapidOCR sidecar kullanılamadı. " +
+      "OCR servisini başlatın (ocr-service/) veya RAPIDOCR_SERVICE_URL değerini kontrol edin.",
     ],
   };
 }

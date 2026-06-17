@@ -34,6 +34,11 @@ export function getAdminAuth(): Auth | null {
   return adminApp ? getAuth(adminApp) : null;
 }
 
+/** Başlatılmış Admin app'i döndürür (Storage vb. için), yoksa null. */
+export function getAdminApp(): App | null {
+  return adminApp;
+}
+
 export interface Persistence {
   /** Gerçek Firestore yazımı etkin mi? false ise tüm çağrılar no-op'tur. */
   readonly enabled: boolean;

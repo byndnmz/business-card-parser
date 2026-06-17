@@ -13,6 +13,10 @@ export interface BusinessCard {
   id: string;
   owner_user_id: string;
   image_url: string;
+  storage_path?: string;
+  image_hash?: string;
+  mime_type?: string;
+  parser_version?: string;
   original_file_url?: string;
   original_filename?: string;
   processing_status: "queued" | "processing" | "pending_verification" | "success" | "failed" | "manual_review";

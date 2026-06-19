@@ -74,7 +74,8 @@ function normalizeTitleValue(value: string): string {
     .replace(/\bB\$k\.?/gi, "B\u015fk.");
 }
 
-const INLINE_TITLE_RE = /\b((?:genel\s+)?(?:koordinat[o\u00f6\u014d]r|m[u\u00fc]d[u\u00fc]r|direkt[o\u00f6]r|uzman|m[u\u00fc]hendis|lider|developer|manager|specialist|ceo|cto|cfo|coo))\b/i;
+const INLINE_TITLE_RE = /\b((?:genel\s+)?(?:koordinat[o\u00f6\u014d]r|m[u\u00fc]d[u\u00fc]r|direkt[o\u00f6]r|uzman|m[u\u00fc]hendis|lider|developer|manager|specialist|ceo|cto|cfo|coo|sales|sat[iı\u0131]s|general|brigadier\s+general|chair|prof\.?|associate\s+prof\.?|assoc\.?\s+prof\.?))\b/i;
+const ACADEMIC_NAME_RE = /(?:chair,?\s*)?(?:(?:assoc\.?|associate)\s*)?prof\.?\s*(?:dr\.?\s*)?([A-Z\u00c7\u011e\u0130\u00d6\u015e\u00dc][A-Za-z\u00c7\u011e\u0130\u00d6\u015e\u00dc\u00e7\u011f\u0131\u00f6\u015f\u00fc'.-]+\s+[A-Z\u00c7\u011e\u0130\u00d6\u015e\u00dc][A-Za-z\u00c7\u011e\u0130\u00d6\u015e\u00dc\u00e7\u011f\u0131\u00f6\u015f\u00fc'.-]+)/i;
 
 function likelyNameWord(word: string): boolean {
   const cleaned = word.replace(/^[^\p{L}]+|[^\p{L}.]+$/gu, "");
@@ -95,7 +96,11 @@ function inlineNameTitle(line: LayoutLine): { name?: string; title?: string; tit
     picked.unshift(words[i].replace(/^[^\p{L}]+|[^\p{L}.]+$/gu, ""));
     if (picked.length >= THRESHOLDS.nameMaxWords) break;
   }
-  const name = picked.length >= THRESHOLDS.nameMinWords ? picked.join(" ") : "";
+  let name = picked.length >= THRESHOLDS.nameMinWords ? picked.join(" ") : "";
+  if (!name) {
+    const academicName = line.text.match(ACADEMIC_NAME_RE)?.[1]?.trim();
+    if (academicName) name = academicName;
+  }
   if (!name && !titleRaw) return null;
   return { name, title: normalizeTitleValue(titleRaw), titleRaw };
 }

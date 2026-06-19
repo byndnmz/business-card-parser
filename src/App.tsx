@@ -65,6 +65,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [selectedCard, setSelectedCard] = useState<CardWithRelationships | null>(null);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
+  const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(new Set());
 
   // Search & Filter state
   const [searchTerm, setSearchTerm] = useState("");
@@ -190,6 +191,69 @@ export default function App() {
     } catch (err) {
       console.error(err);
     }
+  };
+
+  const toggleCardSelection = (cardId: string) => {
+    setSelectedCardIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(cardId)) next.delete(cardId);
+      else next.add(cardId);
+      return next;
+    });
+  };
+
+  const toggleVisibleSelection = (visibleCardIds: string[]) => {
+    if (!visibleCardIds.length) return;
+    setSelectedCardIds((prev) => {
+      const next = new Set(prev);
+      const allVisibleSelected = visibleCardIds.every((id) => next.has(id));
+      for (const id of visibleCardIds) {
+        if (allVisibleSelected) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const clearCardSelection = () => setSelectedCardIds(new Set());
+
+  const handleBulkVerify = async () => {
+    const ids = Array.from(selectedCardIds);
+    if (!ids.length) return;
+    if (!confirm(`${ids.length} kartviziti mevcut OCR sonucuyla onaylamak istiyor musunuz?`)) return;
+    const response = await fetch("/api/cards/bulk-verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cardIds: ids }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      alert(data.error || "Toplu onaylama basarisiz.");
+      return;
+    }
+    clearCardSelection();
+    await fetchAllData();
+    await logAuditPayload("BULK_VERIFY_COMPLETED", { approved: data.approved?.length || 0 });
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedCardIds);
+    if (!ids.length) return;
+    if (!confirm(`${ids.length} kartvizit secildi. Bu kayitlari topluca silmek istediginize emin misiniz?`)) return;
+    const response = await fetch("/api/cards/bulk-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cardIds: ids }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      alert(data.error || "Toplu silme basarisiz.");
+      return;
+    }
+    clearCardSelection();
+    if (selectedCard && ids.includes(selectedCard.id)) setSelectedCard(null);
+    await fetchAllData();
+    await logAuditPayload("BULK_DELETE_COMPLETED", { deleted: data.deleted?.length || 0 });
   };
 
   // Card verification confirm commit
@@ -604,6 +668,7 @@ export default function App() {
   const filteredCards = cards.filter(card => {
     const contact = card.contact;
     const fields = card.fields || [];
+    const todayKey = new Date().toISOString().slice(0, 10);
 
     // Search query matches company, name, email, phone, city
     const textFieldsToSearch = [
@@ -625,7 +690,7 @@ export default function App() {
     // Context filter matches
     let matchesCategory = true;
     if (filterCategory === "today") {
-      matchesCategory = card.created_at.startsWith("2026-06-15");
+      matchesCategory = card.created_at.startsWith(todayKey);
     } else if (filterCategory === "pending") {
       matchesCategory = card.processing_status === "pending_verification";
     } else if (filterCategory === "low_confidence") {
@@ -637,6 +702,10 @@ export default function App() {
 
     return matchesSearch && matchesTag && matchesCategory;
   });
+  const visibleCardIds = filteredCards.map((card) => card.id);
+  const allVisibleSelected = visibleCardIds.length > 0 && visibleCardIds.every((id) => selectedCardIds.has(id));
+  const selectedCards = cards.filter((card) => selectedCardIds.has(card.id));
+  const exportCards = selectedCards.length > 0 ? selectedCards : filteredCards;
 
   // --- OTURUM GEÇİDİ: yükleniyor → login ekranı → uygulama ---
   if (authLoading) {
@@ -1081,37 +1150,72 @@ export default function App() {
                 </button>
 
                 {/* Exporter triggers button */}
-                <div className="grid grid-cols-2 gap-2 mb-4">
+                <div className="space-y-2 mb-4">
                   <button
-                    onClick={() => setIsExportOpen(true)}
-                    className="bg-[#080c14] hover:bg-[#0d1421] text-[#94a3b8] font-semibold py-2 px-3 border border-[#1e293b] rounded text-[11px] flex items-center justify-center gap-1.5 cursor-pointer leading-none"
+                    onClick={() => toggleVisibleSelection(visibleCardIds)}
+                    disabled={!visibleCardIds.length}
+                    className="w-full bg-[#080c14] hover:bg-[#0d1421] disabled:opacity-50 disabled:cursor-not-allowed text-[#94a3b8] font-semibold py-2 px-3 border border-[#1e293b] rounded text-[11px] flex items-center justify-center gap-1.5 cursor-pointer leading-none"
                   >
-                    <FileSpreadsheet className="h-4 w-4 text-emerald-400" />
-                    Seçilileri Dışa Aktar ({filteredCards.length})
+                    {allVisibleSelected ? "Görünen Seçimi Kaldır" : `Görünenleri Seç (${visibleCardIds.length})`}
                   </button>
-                  <button
-                    onClick={() => {
-                      const fileInput = document.createElement("input");
-                      fileInput.type = "file";
-                      fileInput.accept = "image/*,application/pdf";
-                      fileInput.onchange = (e: any) => {
-                        const file = e.target.files?.[0];
-                        if (file) handleImageFileSelection(file);
-                      };
-                      fileInput.click();
-                    }}
-                    className="bg-[#1e40af] hover:bg-blue-700 text-white font-semibold py-2 px-3 rounded text-[11px] flex items-center justify-center gap-1.5 cursor-pointer leading-none"
-                  >
-                    <UploadCloud className="h-4 w-4" />
-                    Yeni Kart Yükle
-                  </button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setIsExportOpen(true)}
+                      className="bg-[#080c14] hover:bg-[#0d1421] text-[#94a3b8] font-semibold py-2 px-3 border border-[#1e293b] rounded text-[11px] flex items-center justify-center gap-1.5 cursor-pointer leading-none"
+                    >
+                      <FileSpreadsheet className="h-4 w-4 text-emerald-400" />
+                      Dışa Aktar ({exportCards.length})
+                    </button>
+                    <button
+                      onClick={() => {
+                        const fileInput = document.createElement("input");
+                        fileInput.type = "file";
+                        fileInput.accept = "image/*,application/pdf";
+                        fileInput.onchange = (e: any) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleImageFileSelection(file);
+                        };
+                        fileInput.click();
+                      }}
+                      className="bg-[#1e40af] hover:bg-blue-700 text-white font-semibold py-2 px-3 rounded text-[11px] flex items-center justify-center gap-1.5 cursor-pointer leading-none"
+                    >
+                      <UploadCloud className="h-4 w-4" />
+                      Yeni Kart Yükle
+                    </button>
+                  </div>
                 </div>
+
+                {selectedCardIds.size > 0 && (
+                  <div className="mb-4 rounded border border-[#1e293b] bg-[#080c14] p-2">
+                    <div className="mb-2 flex items-center justify-between gap-2 text-[10px] font-mono text-[#94a3b8]">
+                      <span>{selectedCardIds.size} kart seçildi</span>
+                      <button onClick={clearCardSelection} className="text-slate-400 hover:text-slate-200 cursor-pointer">
+                        Seçimi temizle
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={handleBulkVerify}
+                        className="rounded bg-emerald-700 px-2 py-2 text-[10px] font-semibold text-white hover:bg-emerald-600 cursor-pointer"
+                      >
+                        Toplu Onayla
+                      </button>
+                      <button
+                        onClick={handleBulkDelete}
+                        className="rounded border border-red-800 bg-red-950/50 px-2 py-2 text-[10px] font-semibold text-red-200 hover:bg-red-900/60 cursor-pointer"
+                      >
+                        Toplu Sil
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Cards Scrollable list */}
                 <div className="flex-1 overflow-y-auto space-y-2 pr-1">
                   {filteredCards.length > 0 ? (
                     filteredCards.map((card) => {
                       const isSelected = selectedCard?.id === card.id;
+                      const isChecked = selectedCardIds.has(card.id);
                       const isLowConfidence = card.confidence_score < 0.70;
                       return (
                         <div
@@ -1124,13 +1228,23 @@ export default function App() {
                           }`}
                         >
                           <div className="flex justify-between items-start mb-1.5">
-                            <div>
+                            <div className="flex min-w-0 items-start gap-2">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => toggleCardSelection(card.id)}
+                                onClick={(event) => event.stopPropagation()}
+                                className="mt-0.5 h-3.5 w-3.5 accent-[#1e40af] cursor-pointer flex-shrink-0"
+                                aria-label="Kartviziti sec"
+                              />
+                              <div className="min-w-0">
                               <h4 className="text-xs font-bold text-slate-200">
                                 {card.contact?.full_name || "Bilinmeyen Kartvizit"}
                               </h4>
                               <p className="text-[10px] text-[#94a3b8] mt-0.5 font-sans">
                                 {card.contact?.company || "Şirket Bilgisi Yok"}
                               </p>
+                              </div>
                             </div>
 
                             <span className={`text-[8px] font-mono font-bold px-1.5 py-0.2 rounded border ${
@@ -1371,7 +1485,7 @@ Content-Type: application/json
       {/* RENDER EXPORT FORM DIALOG OVERLAY */}
       {isExportOpen && (
         <ExportDialog
-          cards={filteredCards}
+          cards={exportCards}
           onLogAudit={logAuditPayload}
           onClose={() => setIsExportOpen(false)}
         />

@@ -184,6 +184,41 @@ ok("satir icinden isim ayrilir", inline.full_name === "EYL\u00dcL BA\u015eARAN")
 ok("satir icinden unvan ayrilir", inline.title === "Genel Koordinat\u00f6r");
 ok("domain sirket alanina tamamlanir", inline.company === "BASKIMNET");
 
+// --- 11) Kurum/rol satirlari kisi adi yapilmamali ---
+console.log("\n[INSTITUTION/TITLE NOT NAME]");
+const academyLike: OcrBox[] = [
+  ...line(["Turkish", "Military", "Academy"], 100, 90, 42, 0.96),
+  ...line(["semih.ozden@gmail.com"], 520, 260, 26, 0.95),
+  ...line(["gmail.com"], 520, 300, 24, 0.95),
+];
+const academy = validateAndScore(runCard(academyLike).card);
+ok("kurum satiri isim olmaz", academy.full_name === "");
+ok("email icindeki gmail website olmaz", academy.website === "");
+
+const titleOnlyLike: OcrBox[] = [
+  ...line(["Project", "Development"], 520, 120, 34, 0.95),
+  ...line(["Manager"], 520, 165, 30, 0.95),
+  ...line(["lkirca@resmakine.com"], 520, 260, 24, 0.95),
+];
+const titleOnly = validateAndScore(runCard(titleOnlyLike).card);
+ok("rol satiri isim olmaz", titleOnly.full_name === "");
+
+// --- 12) Domain parcasi sirketi tamamlar; sosyal handle isimden temizlenir ---
+console.log("\n[DOMAIN COMPANY AND NAME CLEANUP]");
+const onTrailerLike: OcrBox[] = [
+  ...line(["TRAILE"], 380, 210, 42, 0.92),
+  ...line(["info@on-trailer.com"], 100, 430, 24, 0.96),
+];
+const onTrailer = validateAndScore(runCard(onTrailerLike).card);
+ok("domain parcasi sirketi tamamlar", onTrailer.company === "ON-TRAILER");
+
+const handleNameLike: OcrBox[] = [
+  ...line(["Hasan", "YILDIZ", "/yildizlarhasan"], 520, 210, 34, 0.94),
+  ...line(["www.hasanyildiz.info"], 120, 340, 24, 0.96),
+];
+const handleName = validateAndScore(runCard(handleNameLike).card);
+ok("sosyal handle isimden temizlenir", handleName.full_name === "Hasan YILDIZ");
+
 const fh = (name: string, value: string, conf = 0.9): FieldHit =>
   ({ field_name: name as any, value, confidence: conf, bbox: { x: 0, y: 0, width: 0, height: 0 }, source: "ocr", valid: true });
 

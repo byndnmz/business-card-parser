@@ -15,9 +15,10 @@ const URL_RE = new RegExp(
   `\\b((?:https?:\\/\\/)?(?:www\\.)?[A-Za-z0-9\\-]+(?:\\.[A-Za-z0-9\\-]+)*\\.(?:${tldAlt}))(\\/[\\w\\-./?%&=#]*)?\\b`,
   "i"
 );
+const FREE_MAIL_HOSTS = new Set(["gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "icloud.com", "yandex.com", "live.com", "msn.com"]);
 
 export function normalizeWebsite(raw: string): string {
-  return raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  return raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
 }
 
 export function extractUrl(m: LayoutModel): FieldHit[] {
@@ -27,9 +28,12 @@ export function extractUrl(m: LayoutModel): FieldHit[] {
     const match = line.text.match(URL_RE);
     if (!match) continue;
     const raw = match[1] + (match[2] || "");
-    if (raw.includes("@")) continue; // e-posta parçası
+    const index = match.index ?? line.text.indexOf(match[0]);
+    const before = index > 0 ? line.text[index - 1] : "";
+    if (raw.includes("@") || before === "@") continue; // e-posta parçası
     if (isSocial(raw)) continue; // sosyal medya ayrı
     const value = normalizeWebsite(raw);
+    if (FREE_MAIL_HOSTS.has(value.replace(/^www\./, ""))) continue;
     // Çok kısa/şüpheli domainleri ele (ör. tek harf)
     if (value.replace(/\..*$/, "").length < 2) continue;
     return [

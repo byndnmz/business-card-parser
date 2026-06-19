@@ -463,6 +463,7 @@ function requireRole(roles: string[]) {
 const authLimiter = rateLimit({ windowMs: 60_000, max: 10, key: "auth" });
 const mfaLimiter = rateLimit({ windowMs: 60_000, max: 5, key: "mfa" });
 const uploadLimiter = rateLimit({ windowMs: 60_000, max: 30, key: "upload" });
+const batchLimiter = rateLimit({ windowMs: 60_000, max: 120, key: "batch" });
 const ocrLimiter = rateLimit({ windowMs: 60_000, max: 30, key: "ocr" });
 const exportLimiter = rateLimit({ windowMs: 60_000, max: 20, key: "export" });
 
@@ -929,6 +930,80 @@ app.delete("/api/cards/:id", requireAuth, (req, res) => {
 
 // OCR/AI çıkarımı — gerçek parser motoru (parser.ts) üzerinden.
 // Sağlayıcı OCR_PROVIDER ile değiştirilebilir; Gemini yoksa açık etiketli mock döner.
+app.post("/api/cards/bulk-verify", requireAuth, requireRole(["admin", "operator"]), (req, res) => {
+  const cardIds: string[] = Array.isArray(req.body?.cardIds)
+    ? [...new Set<string>(req.body.cardIds.map((id: any) => sanitizeString(id, 80)).filter(Boolean))]
+    : [];
+  if (!cardIds.length) return res.status(400).json({ error: "Onaylanacak kart secilmedi." });
+
+  const approved: string[] = [];
+  const skipped: Array<{ id: string; error: string }> = [];
+
+  for (const id of cardIds) {
+    const card = dbBusinessCards.find((c: any) => c.id === id) as any;
+    if (!card) {
+      skipped.push({ id, error: "Kart bulunamadi." });
+      continue;
+    }
+    card.processing_status = "success";
+    card.confidence_score = 1;
+    card.updated_at = new Date().toISOString();
+    saveToFirestore("business_cards", card.id, card);
+
+    const fields = dbBusinessCardFields.filter((field: any) => field.business_card_id === id);
+    for (const field of fields) {
+      field.is_verified = true;
+      saveToFirestore("business_card_fields", field.id, field);
+    }
+    approved.push(id);
+  }
+
+  createAuditLog(actor(req).id, "BUSINESS_CARDS_BULK_VERIFIED", "business_cards", "bulk", null,
+    { requested: cardIds.length, approved: approved.length, skipped }, clientIp(req), req.headers["user-agent"] || "Web Portal");
+  res.json({ success: true, approved, skipped });
+});
+
+app.post("/api/cards/bulk-delete", requireAuth, requireRole(["admin", "operator"]), (req, res) => {
+  const cardIds: string[] = Array.isArray(req.body?.cardIds)
+    ? [...new Set<string>(req.body.cardIds.map((id: any) => sanitizeString(id, 80)).filter(Boolean))]
+    : [];
+  if (!cardIds.length) return res.status(400).json({ error: "Silinecek kart secilmedi." });
+
+  const deleted: string[] = [];
+  const skipped: Array<{ id: string; error: string }> = [];
+
+  for (const id of cardIds) {
+    const cardIndex = dbBusinessCards.findIndex((c: any) => c.id === id);
+    if (cardIndex === -1) {
+      skipped.push({ id, error: "Kart bulunamadi." });
+      continue;
+    }
+    const card = dbBusinessCards[cardIndex] as any;
+    if (!(actor(req).role === "admin" || card.owner_user_id === actor(req).id)) {
+      skipped.push({ id, error: "Yetkisiz kart." });
+      continue;
+    }
+
+    const contact = dbContacts.find((c: any) => c.business_card_id === id);
+    if (contact) {
+      contact.is_deleted = true;
+      contact.updated_at = new Date().toISOString();
+      saveToFirestore("contacts", contact.id, contact);
+    }
+    if (card.storage_path) void deleteCardImage(card.storage_path);
+    const removedFields = dbBusinessCardFields.filter((field: any) => field.business_card_id === id);
+    for (const field of removedFields) removeFromFirestore("business_card_fields", field.id);
+    dbBusinessCardFields = dbBusinessCardFields.filter((field: any) => field.business_card_id !== id);
+    dbBusinessCards.splice(cardIndex, 1);
+    removeFromFirestore("business_cards", id);
+    deleted.push(id);
+  }
+
+  createAuditLog(actor(req).id, "BUSINESS_CARDS_BULK_DELETE", "business_cards", "bulk", null,
+    { requested: cardIds.length, deleted: deleted.length, skipped }, clientIp(req), req.headers["user-agent"] || "Web Portal");
+  res.json({ success: true, deleted, skipped });
+});
+
 app.post("/api/ocr/extract", requireAuth, ocrLimiter, async (req, res) => {
   const base64Image = req.body?.base64Image;
   // Dosya güvenlik kapısı: imza (magic-byte) + boyut + izinli tür.
@@ -1320,6 +1395,110 @@ app.post("/api/cards/:id/process", requireAuth, ocrLimiter, async (req, res) => 
 // Toplu yükleme — her dosya için GERÇEK OCR çalıştırır; geçersiz dosyalar
 // "failed" olarak sayılır ve ayrı listelenir.
 const MAX_BATCH_FILES = 50;
+app.post("/api/batches", requireAuth, uploadLimiter, (req, res) => {
+  const total = Math.max(1, Math.min(MAX_BATCH_FILES, Number(req.body?.total_files || 0)));
+  const batchId = `batch-${Date.now()}`;
+  const batch = {
+    id: batchId,
+    created_by: actor(req).id,
+    total_files: total,
+    processed_files: 0,
+    failed_files: 0,
+    status: "processing",
+    failures: [] as Array<{ filename: string; error: string }>,
+    created_at: new Date().toISOString(),
+    completed_at: "",
+  };
+  dbBatches.push(batch);
+  saveToFirestore("batches", batch.id, batch);
+  createAuditLog(actor(req).id, "BATCH_CREATED", "batches", batchId, null,
+    { total }, clientIp(req), req.headers["user-agent"] || "Web Portal");
+  res.json({ batch });
+});
+
+function finalizeBatchIfDone(batch: any) {
+  if (batch.processed_files + batch.failed_files >= batch.total_files) {
+    batch.status = "completed";
+    batch.completed_at = new Date().toISOString();
+  }
+  saveToFirestore("batches", batch.id, batch);
+}
+
+app.post("/api/batches/:id/items", requireAuth, batchLimiter, async (req, res) => {
+  const batch = dbBatches.find((b: any) => b.id === req.params.id) as any;
+  if (!batch) return res.status(404).json({ error: "Batch bulunamadi." });
+  if (batch.created_by !== actor(req).id && actor(req).role === "user") {
+    return res.status(403).json({ error: "Bu batch icin yetkiniz yok." });
+  }
+
+  const file = req.body?.file || req.body || {};
+  const imageBase64 = file?.imageBase64;
+  const filename = sanitizeString(file?.filename, 200) || "isimsiz-dosya";
+  const check = checkUpload(imageBase64);
+  if (!check.ok) {
+    const failure = { filename, error: check.error || "Gecersiz dosya." };
+    batch.failed_files += 1;
+    batch.failures = [...(batch.failures || []), failure];
+    finalizeBatchIfDone(batch);
+    return res.status(400).json({ batch, failure });
+  }
+
+  try {
+    const ownerId = actor(req).id;
+    const hash = imageHash(imageBase64);
+    const cached = cachedCardFor(ownerId, hash);
+    if (cached) {
+      batch.processed_files += 1;
+      finalizeBatchIfDone(batch);
+      return res.json({ batch, processed: { ...(cached as any), storage: "cache", cached: true } });
+    }
+
+    const parsed = await runWithOcrSemaphore(() => parseBusinessCard(ai, { base64: imageBase64, mimeType: check.detectedType! }));
+    const duplicateOf = detectDuplicate(dbContacts as any, {
+      email: parsed.email,
+      phone: parsed.phone,
+      full_name: parsed.full_name,
+      company: parsed.company,
+    });
+    const status =
+      duplicateOf || parsed.confidence_score < 0.7 || parsed.warnings.length > 0
+        ? "manual_review"
+        : "pending_verification";
+    const { card, fields, contact } = buildRecordsFromParsed({
+      parsed,
+      ownerId,
+      source: "web",
+      imageUrl: "",
+      imageHash: hash,
+      mimeType: check.detectedType!,
+      batchId: batch.id,
+      status,
+      filename,
+    });
+    const preparedImage = await prepareCardImage(card.id, imageBase64, check.detectedType!);
+    (card as any).image_url = preparedImage.imageUrl;
+    (card as any).storage_path = preparedImage.storagePath;
+    dbBusinessCards.push(card as any);
+    saveToFirestore("business_cards", card.id, card);
+    dbBusinessCardFields.push(...(fields as any));
+    for (const f of fields) saveToFirestore("business_card_fields", f.id, f);
+    dbContacts.push(contact as any);
+    saveToFirestore("contacts", contact.id, contact);
+
+    batch.processed_files += 1;
+    finalizeBatchIfDone(batch);
+    const processed = { card, contact, fields, duplicateOf, warnings: parsed.warnings, storage: preparedImage.storageMode };
+    return res.json({ batch, processed });
+  } catch (err) {
+    console.error("[BATCH-ITEM] Dosya islenemedi:", err);
+    const failure = { filename, error: "OCR isleme hatasi" };
+    batch.failed_files += 1;
+    batch.failures = [...(batch.failures || []), failure];
+    finalizeBatchIfDone(batch);
+    return res.status(500).json({ batch, failure });
+  }
+});
+
 app.post("/api/cards/batch-upload", requireAuth, uploadLimiter, async (req, res) => {
   const files = req.body?.files;
   if (!files || !Array.isArray(files) || files.length === 0) {

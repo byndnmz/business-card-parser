@@ -23,6 +23,17 @@ export interface Score {
 
 const EMAIL_OR_URL = /@|https?:\/\/|www\.|\.(com|net|org|gov|edu|tr|io)\b/i;
 const HAS_DIGIT = /\d/;
+const INSTITUTION_WORDS = [
+  "academy", "university", "school", "college", "institute", "faculty", "campus",
+  "military", "cluster", "association", "organization", "organisation", "foundation",
+  "defence", "defense", "aviation", "okulu", "universite", "universitesi",
+];
+const NON_PERSON_WORDS = [
+  ...INSTITUTION_WORDS,
+  "project", "development", "electronic", "electronics", "sales", "satis", "satıs",
+  "manager", "director", "chief", "deputy", "chairman", "board", "naval", "architecture",
+  "logistics", "forces", "force", "command", "commad", "congressium", "kurulu",
+];
 
 /** TAM sözcük (sınırlı) — kısa eklerin kelime içinde yanlış eşleşmesini önler. */
 const anyWord = (lower: string, words: string[]): boolean => words.some((w) => containsWord(lower, w) || containsWord(asciiFold(lower), asciiFold(w)));
@@ -30,6 +41,7 @@ const anyWord = (lower: string, words: string[]): boolean => words.some((w) => c
 const anyStem = (lower: string, words: string[]): boolean => words.some((w) => containsStem(lower, w) || containsStem(asciiFold(lower), asciiFold(w)));
 
 function hasTitleKw(lower: string): boolean {
+  if (/\b(chair|prof|professor|assoc|associate|assistant professor|brigadier general|general)\b/i.test(lower)) return true;
   if (anyStem(lower, TITLE_KEYWORDS_TR)) return true; // TR kökleri ek-toleranslı
   return TITLE_KEYWORDS_EN.some((k) => new RegExp(`\\b${k}\\b`, "i").test(lower)); // EN sınırlı
 }
@@ -76,6 +88,7 @@ export function companyScore(line: LayoutLine, m: LayoutModel, emailDomainCore?:
 
   if (anyWord(lower, COMPANY_LEGAL_SUFFIXES)) { score += 0.45; signals.legal = 1; }
   if (anyStem(lower, COMPANY_SECTOR_WORDS)) { score += 0.2; signals.sector = 1; }
+  if (anyWord(lower, INSTITUTION_WORDS)) { score += 0.22; signals.institution = 1; }
 
   // E-POSTA DOMAİNİYLE EŞLEŞME — çok güçlü sinyal
   if (emailDomainCore && domainMatchesCompany(text, emailDomainCore)) {
@@ -117,7 +130,7 @@ export function nameScore(line: LayoutLine, m: LayoutModel): Score {
   const signals: Record<string, number> = {};
   if (HAS_DIGIT.test(text) || /@/.test(text)) return { score: 0, signals };
   if (hasTitleKw(lower) || anyWord(lower, COMPANY_LEGAL_SUFFIXES) ||
-      anyStem(lower, COMPANY_SECTOR_WORDS) || anyWord(lower, ADDRESS_KEYWORDS)) {
+      anyStem(lower, COMPANY_SECTOR_WORDS) || anyWord(lower, INSTITUTION_WORDS) || anyWord(lower, ADDRESS_KEYWORDS)) {
     return { score: 0, signals };
   }
   // Ön-ekleri (Dr., Prof.) ayıkla, gerçek isim sözcüklerini say
@@ -136,6 +149,10 @@ export function nameScore(line: LayoutLine, m: LayoutModel): Score {
   if (fontRatio(line, m) >= THRESHOLDS.largeFontRatio) { score += 0.12; signals.bigFont = 1; }
 
   const tokens = words.map((w) => trLower(w).replace(/[^a-zğüşıöç]/gi, ""));
+  const foldedTokens = words.map((w) => asciiFold(w).replace(/[^a-z]/g, ""));
+  if (foldedTokens.some((token) => NON_PERSON_WORDS.includes(token))) {
+    return { score: 0, signals };
+  }
   if (tokens.some((t) => TR_COMMON_NAMES.includes(t))) { score += 0.18; signals.knownName = 1; }
   if (tokens.some((t) => TR_COMMON_SURNAMES.includes(t))) { score += 0.12; signals.knownSurname = 1; }
   return { score: clamp(score), signals };

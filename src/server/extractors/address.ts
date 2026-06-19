@@ -11,6 +11,7 @@ import { toPercentBox } from "../layout/reconstruct";
 import { makeHit, lineBox } from "./util";
 
 const POSTAL = /\b\d{5}\b/;
+const LEADING_PHONE_CHUNK = /^(?:\s*(?:t|tel|telefon|phone|m|gsm|mob|mobile)\.?\s*:?\s*\+?\d[\d\s().-]{7,}\s*)+/i;
 
 function isAddressLine(line: LayoutLine): boolean {
   const lower = line.text.toLowerCase();
@@ -25,7 +26,12 @@ export function extractAddress(m: LayoutModel): FieldHit[] {
   const hits: FieldHit[] = [];
 
   if (addrLines.length) {
-    const value = addrLines.map((l) => l.text).join(", ").replace(/\s+/g, " ").trim();
+    const value = addrLines
+      .map((l) => l.text.replace(LEADING_PHONE_CHUNK, "").trim())
+      .filter(Boolean)
+      .join(", ")
+      .replace(/\s+/g, " ")
+      .trim();
     const x0 = Math.min(...addrLines.map((l) => l.bbox.x0));
     const y0 = Math.min(...addrLines.map((l) => l.bbox.y0));
     const x1 = Math.max(...addrLines.map((l) => l.bbox.x1));

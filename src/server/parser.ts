@@ -57,7 +57,7 @@ export function normalizePhone(raw: string): string {
 
 /** Web sitesini normalize eder: protokolü kaldırır, küçük harfe çevirir. */
 export function normalizeWebsite(raw: string): string {
-  return raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  return raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
 }
 
 const FIELD_VALIDATORS: Record<string, { pattern: RegExp; normalize?: (s: string) => string }> = {
@@ -124,7 +124,10 @@ export function validateAndScore(card: ParsedCard): ParsedCard {
 function normalizeContactSemantics(card: ParsedCard): void {
   completeKnownCompanyNames(card);
   inferCompanyFromDomain(card);
+  completePartialCompanyFromDomain(card);
+  stripPersonPrefixFromCompany(card);
   stripCompanyPrefixFromName(card);
+  cleanupFullName(card);
   cleanupDepartment(card);
 }
 
@@ -199,7 +202,15 @@ function domainCoreForCompany(card: ParsedCard): string {
 }
 
 function displayCompanyFromCore(core: string): string {
-  return core.toUpperCase();
+  if (/^beyondtech$/.test(core)) return "BEYOND TECHNOLOGIES";
+  if (/^yarengloballojistik$/.test(core)) return "YAREN GLOBAL LOJISTIK";
+  if (/^yarengloballogistics$/.test(core)) return "YAREN GLOBAL LOJISTIK";
+  if (/^ontrailer$/.test(core)) return "ON-TRAILER";
+  if (/^resmakine$/.test(core)) return "RES MAKINE";
+  return core
+    .replace(/([a-z])([0-9])/g, "$1 $2")
+    .replace(/[-_]+/g, " ")
+    .toUpperCase();
 }
 
 function inferCompanyFromDomain(card: ParsedCard): void {
@@ -216,6 +227,19 @@ function inferCompanyFromDomain(card: ParsedCard): void {
   });
 }
 
+function completePartialCompanyFromDomain(card: ParsedCard): void {
+  const core = domainCoreForCompany(card);
+  const companyCore = compactCore(card.company);
+  if (!core || !companyCore) return;
+  const companyIsFragment =
+    companyCore.length >= 4 &&
+    (core.includes(companyCore) || companyCore.includes(core)) &&
+    companyCore !== core;
+  if (!companyIsFragment) return;
+  card.company = displayCompanyFromCore(core);
+  updateField(card, "company", card.company, 0.82);
+}
+
 function looksLikePersonName(value: string): boolean {
   if (!value || /@|\d/.test(value)) return false;
   const words = value.trim().split(/\s+/).filter(Boolean);
@@ -226,6 +250,58 @@ function looksLikePersonName(value: string): boolean {
 function hasInstitutionalCompanySignal(company: string): boolean {
   const folded = asciiFold(company).toLowerCase();
   return /\b(global|lojistik|logistics|teknoloji|technology|technologies|sanayi|ticaret|holding|grup|group|a\s*s|ltd|inc|corp|systems|solutions|software|engineering)\b/.test(folded);
+}
+
+const NON_PERSON_NAME_WORDS = new Set([
+  "academy", "university", "school", "college", "institute", "faculty", "campus",
+  "military", "cluster", "association", "organization", "organisation", "foundation",
+  "defence", "defense", "aviation", "project", "development", "electronic", "electronics",
+  "sales", "satis", "manager", "director", "chief", "deputy", "chairman", "board",
+  "naval", "architecture", "logistics", "forces", "force", "command", "commad",
+  "general", "brigadier", "prof", "professor",
+]);
+
+function cleanupFullName(card: ParsedCard): void {
+  let name = (card.full_name || "").trim();
+  if (!name) return;
+
+  name = name
+    .replace(/\s+\/\s*[A-Za-z0-9_.-]{4,}\s*$/i, "")
+    .replace(/\s+@[A-Za-z0-9_.-]{3,}\s*$/i, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  const foldedTokens = name.split(/\s+/).map((word) => compactCore(word));
+  const hasBadToken = foldedTokens.some((token) => NON_PERSON_NAME_WORDS.has(token));
+  if (!looksLikePersonName(name) || hasBadToken) {
+    card.full_name = "";
+    removeField(card, "full_name");
+    return;
+  }
+
+  if (name !== card.full_name) {
+    card.full_name = name;
+    updateField(card, "full_name", name);
+  }
+}
+
+function stripPersonPrefixFromCompany(card: ParsedCard): void {
+  const company = (card.company || "").trim();
+  if (!company || !hasInstitutionalCompanySignal(company)) return;
+  const words = company.split(/\s+/).filter(Boolean);
+  if (words.length < 4) return;
+  const maybeName = words.slice(0, 2).join(" ");
+  if (!looksLikePersonName(maybeName)) return;
+
+  const stripped = words.slice(2).join(" ");
+  if (stripped.length < 4) return;
+  const domainCore = domainCoreForCompany(card);
+  if (domainCore === "resmakine" && /\bmak[ie]na\b/i.test(asciiFold(stripped))) {
+    card.company = displayCompanyFromCore(domainCore);
+  } else {
+    card.company = stripped;
+  }
+  updateField(card, "company", card.company, 0.8);
 }
 
 function emailLocalCore(email: string): string {

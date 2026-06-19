@@ -10,7 +10,7 @@ import {
   RefreshCw,
   UploadCloud,
 } from "lucide-react";
-import { prepareImageForUpload } from "../client/upload-prep";
+import { prepareImageForUpload, type PreparedUpload } from "../client/upload-prep";
 
 interface BatchProcessorProps {
   batches: Batch[];
@@ -63,6 +63,124 @@ export default function BatchProcessor({
   const [activeTab, setActiveTab] = useState<string>("all");
   const [loadingBatchId, setLoadingBatchId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
+
+  const handleBatchUploadV2 = async (fileList: FileList | null) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    if (files.length > 50) {
+      alert("Toplu islemde en fazla 50 dosya yuklenebilir.");
+      return;
+    }
+
+    setLoadingBatchId("new");
+    const rows: BatchFileRow[] = files.map((file, index) => ({
+      id: `pending-${index}`,
+      filename: file.name,
+      status: "processing",
+      info: "Dosya siraya alindi.",
+      company: "OCR",
+    }));
+    setSelectedBatchFiles(rows);
+    setStatusMessage(`${files.length} dosya OCR kuyruguna aliniyor...`);
+    onLogAudit("BATCH_UPLOAD_STARTED", { count: files.length });
+
+    try {
+      const createResponse = await fetch("/api/batches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ total_files: files.length }),
+      });
+      const createData = await createResponse.json();
+      if (!createResponse.ok || !createData.batch?.id) {
+        throw new Error(createData.error || "Batch olusturulamadi.");
+      }
+      const batchId = createData.batch.id;
+      let processed = 0;
+      let failed = 0;
+
+      const updateRow = (index: number, row: BatchFileRow) => {
+        rows[index] = row;
+        setSelectedBatchFiles([...rows]);
+      };
+
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        updateRow(index, {
+          id: `preparing-${index}`,
+          filename: file.name,
+          status: "processing",
+          info: "Gorsel hazirlaniyor ve sikistiriliyor.",
+          company: "OCR",
+        });
+
+        let prepared: PreparedUpload;
+        try {
+          prepared = await prepareImageForUpload(file);
+        } catch (error: any) {
+          try {
+            await fetch(`/api/batches/${batchId}/items`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ file: { filename: file.name, imageBase64: "" } }),
+            });
+          } catch {
+            // Batch sayaci bildirilemezse UI yine dosya bazli hatayi gosterir.
+          }
+          failed += 1;
+          updateRow(index, {
+            id: `failed-${index}`,
+            filename: file.name,
+            status: "failed",
+            info: error?.message || "Gorsel hazirlanamadi.",
+            company: "HATA",
+          });
+          setStatusMessage(`${processed}/${files.length} dosya islendi, ${failed} hata.`);
+          continue;
+        }
+
+        updateRow(index, {
+          id: `processing-${index}`,
+          filename: prepared.filename,
+          status: "processing",
+          info: "RapidOCR ile isleniyor.",
+          company: "OCR",
+        });
+
+        const response = await fetch(`/api/batches/${batchId}/items`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            file: {
+              filename: prepared.filename,
+              mimeType: prepared.mimeType,
+              imageHash: prepared.imageHash,
+              originalBytes: prepared.originalBytes,
+              processedBytes: prepared.processedBytes,
+              imageBase64: prepared.base64,
+            },
+          }),
+        });
+        const data = await response.json();
+        if (response.ok && data.processed) {
+          processed += 1;
+          updateRow(index, rowFromProcessed(data.processed));
+        } else {
+          failed += 1;
+          updateRow(index, rowFromFailure(data.failure || { filename: prepared.filename, error: data.error }, index));
+        }
+        setStatusMessage(`${processed}/${files.length} dosya islendi, ${failed} hata.`);
+      }
+
+      onLogAudit("BATCH_UPLOAD_COMPLETED", { batchId, processed, failed });
+      await onBatchProcessed();
+    } catch (error: any) {
+      console.error(error);
+      setStatusMessage(error?.message || "Toplu islem tamamlanamadi.");
+    } finally {
+      setLoadingBatchId(null);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
 
   const handleBatchUpload = async (fileList: FileList | null) => {
     const files = Array.from(fileList || []);
@@ -208,7 +326,7 @@ export default function BatchProcessor({
             multiple
             accept="image/*,application/pdf"
             className="hidden"
-            onChange={(event) => handleBatchUpload(event.target.files)}
+            onChange={(event) => handleBatchUploadV2(event.target.files)}
           />
           <button
             onClick={() => inputRef.current?.click()}

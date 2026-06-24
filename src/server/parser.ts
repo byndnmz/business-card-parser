@@ -125,8 +125,12 @@ function normalizeContactSemantics(card: ParsedCard): void {
   completeKnownCompanyNames(card);
   inferCompanyFromDomain(card);
   completePartialCompanyFromDomain(card);
-  stripPersonPrefixFromCompany(card);
+  extractCompanyFromAddressTail(card);
+  extractInstitutionFromAddress(card);
+  cleanupCompanyEchoInAddress(card);
+  cleanupAddressFragments(card);
   stripCompanyPrefixFromName(card);
+  cleanupTitle(card);
   cleanupFullName(card);
   cleanupDepartment(card);
 }
@@ -138,6 +142,23 @@ function updateField(card: ParsedCard, fieldName: string, value: string, minConf
   if (typeof minConfidence === "number") {
     field.confidence_score = Math.max(field.confidence_score || 0, minConfidence);
   }
+}
+
+function upsertField(card: ParsedCard, fieldName: string, value: string, minConfidence = 0.72): void {
+  const field = card.fields.find((item) => item.field_name === fieldName);
+  if (field) {
+    field.field_value = value;
+    field.confidence_score = Math.max(field.confidence_score || 0, minConfidence);
+    field.valid = true;
+    return;
+  }
+  card.fields.push({
+    field_name: fieldName,
+    field_value: value,
+    confidence_score: minConfidence,
+    valid: true,
+    bounding_box: { x: 0, y: 0, width: 0, height: 0 },
+  });
 }
 
 function removeField(card: ParsedCard, fieldName: string): void {
@@ -233,11 +254,129 @@ function completePartialCompanyFromDomain(card: ParsedCard): void {
   if (!core || !companyCore) return;
   const companyIsFragment =
     companyCore.length >= 4 &&
-    (core.includes(companyCore) || companyCore.includes(core)) &&
+    core.includes(companyCore) &&
     companyCore !== core;
   if (!companyIsFragment) return;
   card.company = displayCompanyFromCore(core);
   updateField(card, "company", card.company, 0.82);
+}
+
+const ADDRESS_COMPANY_MARKERS = [
+  "makina", "makine", "kalip", "kalıp", "sanayi", "sanayii", "ticaret",
+  "otomotiv", "savunma", "teknoloji", "lojistik", "muhendislik",
+  "engineering", "defense", "defence", "aviation", "a.s", "as", "aş",
+  "ltd", "sti", "şti",
+];
+
+function looksLikeCompanyTail(value: string): boolean {
+  const folded = asciiFold(value).toLowerCase();
+  const markerCount = ADDRESS_COMPANY_MARKERS.filter((marker) => folded.includes(marker)).length;
+  const hasLegal = /\b(a\s*\.?\s*s\.?|as|aş|ltd|sti|s?ti)\b/i.test(folded);
+  return hasLegal || markerCount >= 2;
+}
+
+function tidyAddress(value: string): string {
+  return value
+    .replace(/\s+([,./-])/g, "$1")
+    .replace(/([,./-]){2,}/g, "$1")
+    .replace(/\s+/g, " ")
+    .replace(/[,\s-]+$/g, "")
+    .trim();
+}
+
+function extractCompanyFromAddressTail(card: ParsedCard): void {
+  if (card.company.trim()) return;
+  const address = (card.address || "").trim();
+  if (!address) return;
+
+  const countryTail = address.match(/\b(?:Türkiye|Turkiye|Turkey|TÜRKIYE|TURKIYE)\b\s+(.+)$/i);
+  const legalTail = address.match(/([A-ZÇĞİÖŞÜ0-9][\p{L}0-9&'.-]*(?:\s+[A-ZÇĞİÖŞÜ0-9][\p{L}0-9&'.-]*){0,8}\s+(?:Makina|Makine|Kalip|Kalıp|Sanayi|Sanayii|Ticaret|Otomotiv|Savunma|Teknoloji|Lojistik|Mühendislik|Engineering|Defense|Defence|Aviation)\b[\p{L}0-9&'. -]*(?:A\.?\s*Ş\.?|A\.?\s*S\.?|Ltd\.?\s*Şti\.?|LTD\.?\s*STI\.?|Şti\.?|Sti\.?|Ltd\.?)?)$/iu);
+  const rawTail = (countryTail?.[1] || legalTail?.[1] || "").trim();
+  const company = rawTail.replace(/^(?:Türkiye|Turkiye|Turkey|TÜRKIYE|TURKIYE)\s+/i, "").trim();
+  if (!company || company.length < 4 || !looksLikeCompanyTail(company)) return;
+  if (/@|\b(?:mah|mahalle|cad|cadde|sok|sokak|bulvar|no)\b/i.test(asciiFold(company).toLowerCase())) return;
+
+  card.company = company;
+  upsertField(card, "company", company, 0.78);
+
+  const index = address.toLowerCase().lastIndexOf(rawTail.toLowerCase());
+  if (index > 0) {
+    const cleaned = tidyAddress(address.slice(0, index));
+    if (cleaned) {
+      card.address = cleaned;
+      updateField(card, "address", cleaned);
+    }
+  }
+}
+
+function extractInstitutionFromAddress(card: ParsedCard): void {
+  if (card.company.trim()) return;
+  const address = (card.address || "").trim();
+  if (!address) return;
+  const match = address.match(/\b((?:National|Turkish|Military|Defence|Defense|University|Academy|School|College|Institute|Faculty)[A-Za-z&'. -]*(?:University|Academy|School|College|Institute|Faculty))\b/i);
+  const institution = match?.[1]?.replace(/\s+/g, " ").trim() || "";
+  if (!institution) return;
+
+  card.company = institution;
+  upsertField(card, "company", institution, 0.76);
+  const cleaned = tidyAddress(address.replace(institution, ""));
+  if (cleaned && cleaned !== address) {
+    card.address = cleaned;
+    updateField(card, "address", cleaned);
+  }
+}
+
+function cleanupCompanyEchoInAddress(card: ParsedCard): void {
+  const address = (card.address || "").trim();
+  const company = (card.company || "").trim();
+  if (!address || !company) return;
+
+  let cleaned = address;
+  const exact = new RegExp(company.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+  if (exact.test(cleaned)) {
+    cleaned = tidyAddress(cleaned.replace(exact, ""));
+  }
+
+  const firstCompanyToken = company.split(/\s+/).find((word) => compactCore(word).length >= 3) || "";
+  const foldedAddress = asciiFold(cleaned).toLowerCase();
+  const hasAddressSignal = /\b(no|mah|mahalle|cad|cadde|sok|sokak|bulvar|osb)\b/.test(foldedAddress);
+  if (firstCompanyToken && hasAddressSignal) {
+    const tokenRe = new RegExp(`(?:\\s|[-,;/])+${firstCompanyToken.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i");
+    cleaned = tidyAddress(cleaned.replace(tokenRe, ""));
+  }
+
+  if (cleaned && cleaned !== address) {
+    card.address = cleaned;
+    updateField(card, "address", cleaned);
+  }
+}
+
+function cleanupAddressFragments(card: ParsedCard): void {
+  const address = (card.address || "").trim();
+  if (!address) return;
+  const cleaned = tidyAddress(address
+    .replace(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g, " ")
+    .replace(/(?:https?:\/\/|www\.)\S+|\b[A-Za-z0-9\-]+\.(?:com|net|org|gov|edu|tr|io)(?:\.[a-z]{2,})?\b/gi, " ")
+    .replace(/(?:\+?\d[\d\s().\-\/]{7,}\d)/g, " ")
+    .replace(/\b(?:tel|telefon|phone|gsm|mobile|cep|fax)\b\.?:?/gi, " ")
+  );
+  if (cleaned && cleaned !== address) {
+    card.address = cleaned;
+    updateField(card, "address", cleaned);
+  }
+}
+
+function cleanupTitle(card: ParsedCard): void {
+  const title = (card.title || "").trim();
+  if (!title) return;
+  const fixed = title
+    .replace(/^s\s+(Geli(?:ş|s)tirme\b)/i, "Is $1")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (fixed !== title) {
+    card.title = fixed;
+    updateField(card, "title", fixed);
+  }
 }
 
 function looksLikePersonName(value: string): boolean {
@@ -258,7 +397,8 @@ const NON_PERSON_NAME_WORDS = new Set([
   "defence", "defense", "aviation", "project", "development", "electronic", "electronics",
   "sales", "satis", "manager", "director", "chief", "deputy", "chairman", "board",
   "naval", "architecture", "logistics", "forces", "force", "command", "commad",
-  "general", "brigadier", "prof", "professor",
+  "general", "brigadier", "prof", "professor", "yonetim", "kurulu", "baskan",
+  "baskani", "başkani", "domestic", "purchasing", "procurement", "buyer",
 ]);
 
 function cleanupFullName(card: ParsedCard): void {

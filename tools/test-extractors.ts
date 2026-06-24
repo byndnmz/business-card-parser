@@ -124,7 +124,18 @@ const beyondDamla: OcrBox[] = [
   ...line(["damlarecber@beyondtech.com.tr"], 160, 460, 28, 0.99),
 ];
 const bd = runCard(beyondDamla).card;
+ok("BEYOND kartinda isim rol satirindan ezilmez", bd.full_name === "Damla Reçber");
+ok("BEYOND kartinda unvan tam korunur", bd.title === "Project Assistant Specialist");
 ok("BEYOND sirket adi TECHNOLOGIES ile tamamlandi", bd.company === "BEYOND TECHNOLOGIES");
+
+const beyondMergedNameTitle: OcrBox[] = [
+  ...line(["BEYOND"], 610, 105, 38, 0.99),
+  ...line(["Damla", "Reçber", "Project", "Assistant", "Specialist"], 160, 225, 38, 0.98),
+  ...line(["damlarecber@beyondtech.com.tr"], 160, 460, 28, 0.99),
+];
+const bdm = runCard(beyondMergedNameTitle).card;
+ok("BEYOND birlesik satirda isim kurtarilir", bdm.full_name === "Damla Reçber");
+ok("BEYOND birlesik satirda unvan tam kurtarilir", bdm.title === "Project Assistant Specialist");
 
 // --- 7) 90 derece donuk kart: dikey OCR kutulari tek satira birlesmemeli ---
 console.log("\n[DÖNÜK KART]");
@@ -218,6 +229,104 @@ const handleNameLike: OcrBox[] = [
 ];
 const handleName = validateAndScore(runCard(handleNameLike).card);
 ok("sosyal handle isimden temizlenir", handleName.full_name === "Hasan YILDIZ");
+
+// --- 13) Vergi satirindaki marka sirket adina eklenmeli ---
+console.log("\n[TAX LINE BRAND PREFIX]");
+const armourDefenceLike: OcrBox[] = [
+  { text: "Halil KARAKOYUN", confidence: 0.999, bbox: { x0: 307, y0: 362, x1: 366, y1: 922 } },
+  { text: "+90 532 462 92 93", confidence: 0.997, bbox: { x0: 465, y0: 430, x1: 512, y1: 835 } },
+  { text: "General Manager", confidence: 0.984, bbox: { x0: 387, y0: 433, x1: 447, y1: 835 } },
+  { text: "Armour Defence Başkent V.D. / 0801131027", confidence: 0.990, bbox: { x0: 718, y0: 636, x1: 778, y1: 1373 } },
+  { text: "Kizilirmak Mah. 1450. Sk. No:18/8 Pk:06520", confidence: 0.996, bbox: { x0: 818, y0: 640, x1: 880, y1: 1379 } },
+  { text: "Savunma Sanayi ve Ticaret LTD. ŞTi.", confidence: 0.951, bbox: { x0: 767, y0: 761, x1: 835, y1: 1380 } },
+  { text: "Cukurambar-Ankara/TÜRKiYE", confidence: 0.979, bbox: { x0: 874, y0: 856, x1: 937, y1: 1380 } },
+];
+const armour = validateAndScore(runCard(armourDefenceLike, 1200, 1600).card);
+ok("vergi satirindaki marka sirket adina eklenir", armour.company === "Armour Defence Savunma Sanayi ve Ticaret LTD. ŞTi.");
+ok("vergi numarasi tax_info alaninda kalir", armour.fields.some((f) => f.field_name === "tax_info" && f.field_value === "0801131027"));
+
+// --- 14) Deterministik satira yapisan isim/unvan geri kazanilmali ---
+console.log("\n[DETERMINISTIC RESIDUE NAME/TITLE]");
+const demirZeminLike: OcrBox[] = [
+  { text: "12.Kat D:82 Esenyurt-ISTANBUL", confidence: 0.981, bbox: { x0: 785, y0: 240, x1: 840, y1: 810 } },
+  { text: "Zafer Mah. Doğan Arasli Bulvari", confidence: 0.975, bbox: { x0: 701, y0: 261, x1: 743, y1: 812 } },
+  { text: "No:99-97 N Cadde Business", confidence: 0.998, bbox: { x0: 743, y0: 281, x1: 790, y1: 808 } },
+  { text: "demir-nermin@hotmail.com", confidence: 1, bbox: { x0: 928, y0: 303, x1: 986, y1: 808 } },
+  { text: "0212 979 63 53 (Tel & Fax)", confidence: 0.998, bbox: { x0: 836, y0: 317, x1: 885, y1: 810 } },
+  { text: "www.demirzemin.com", confidence: 1, bbox: { x0: 981, y0: 399, x1: 1034, y1: 807 } },
+  { text: "0532 587 19 19", confidence: 0.992, bbox: { x0: 882, y0: 504, x1: 937, y1: 810 } },
+  { text: "demir zemin mühendislik", confidence: 0.999, bbox: { x0: 524, y0: 871, x1: 580, y1: 1371 } },
+  { text: "Nermin DEMIR", confidence: 0.975, bbox: { x0: 824, y0: 945, x1: 902, y1: 1418 } },
+  { text: "Jeoloji Mühendisi", confidence: 1, bbox: { x0: 902, y0: 974, x1: 974, y1: 1427 } },
+];
+const demir = validateAndScore(runCard(demirZeminLike, 1200, 1600).card);
+ok("telefon satirina yapisan isim kurtarilir", demir.full_name === "Nermin DEMIR");
+ok("email satirina yapisan unvan kurtarilir", demir.title === "Jeoloji Mühendisi");
+ok("muhendislik sirket satiri unvan yapilmaz", demir.company === "demir zemin mühendislik");
+
+// --- 15) Satin alma unvani isim olmaz; e-posta local-part isim adayini destekler ---
+console.log("\n[BMC NAME VS TITLE]");
+const bmcDogusLike: OcrBox[] = [
+  ...line(["BMC", "OTOMOTIV", "SANAYI", "VE", "TICARET", "A.\u015e."], 120, 300, 26, 0.98),
+  ...line(["dogus.kaya@bmc.com.tr"], 120, 360, 24, 0.99),
+  ...line(["Domestic", "Purchasing", "Manager"], 120, 420, 28, 0.96),
+  ...line(["Do\u011fu\u015f", "KAYA"], 120, 470, 34, 0.93),
+];
+const bmcDogus = validateAndScore(runCard(bmcDogusLike).card);
+ok("Domestic Purchasing isim degil tam unvan olur", bmcDogus.title === "Domestic Purchasing Manager");
+ok("dogus.kaya local-part isim secimini destekler", bmcDogus.full_name === "Do\u011fu\u015f KAYA");
+
+const bmcErkanLike: OcrBox[] = [
+  ...line(["T.", "M."], 80, 80, 22, 0.95),
+  ...line(["BMC", "OTOMOTIV", "SANAYI", "VE", "TICARET", "A.S."], 120, 300, 26, 0.98),
+  ...line(["erkan.baskurt@bmc.com.tr"], 120, 360, 24, 0.99),
+  ...line(["Purchasing", "Manager"], 120, 420, 28, 0.96),
+  ...line(["Erkan", "BA\u015eKURT"], 120, 470, 34, 0.93),
+];
+const bmcErkan = validateAndScore(runCard(bmcErkanLike).card);
+ok("sadece bas harflerden isim secilmez", bmcErkan.full_name === "Erkan BA\u015eKURT");
+ok("Purchasing Manager tam unvan korunur", bmcErkan.title === "Purchasing Manager");
+
+// --- 16) Adres icindeki kurum ve yasal sirket kuyrugu kurtarilir ---
+console.log("\n[ADDRESS EMBEDDED COMPANY]");
+const semihLike: OcrBox[] = [
+  ...line(["semihozden@gmail.com"], 520, 230, 24, 0.95),
+  ...line(["Devlet", "Mah.", "Kara", "Harp", "Okulu", "Cad.", "National", "Defence", "University"], 80, 300, 22, 0.96),
+  ...line(["Semih", "\u00d6ZDEN"], 80, 380, 34, 0.96),
+  ...line(["Chair,", "Assoc.", "Prof.", "Dr."], 80, 430, 24, 0.96),
+];
+const semih = validateAndScore(runCard(semihLike).card);
+ok("adres icindeki kurum sirket/kurum alanina alinir", semih.company === "National Defence University");
+ok("kurum adi adreste tekrar kalmaz", !/National Defence University/i.test(semih.address));
+
+const kalekalipLike: OcrBox[] = [
+  ...line(["Tevfikbey", "Mah.", "Istiklal", "Cad.", "No.", "29", "34295", "K.\u00c7ekmece", "-", "istanbul", "-", "T\u00fcrkiye", "KALEKALIP", "Makina", "ve", "Kalip", "Sanayi", "A.\u015e."], 60, 270, 18, 0.96),
+  ...line(["Alparslan", "\u00c7ELEBi"], 80, 360, 30, 0.95),
+  ...line(["Is", "Geli\u015ftirme", "Uzmani"], 80, 405, 22, 0.95),
+];
+const kalekalip = validateAndScore(runCard(kalekalipLike, 1400, 600).card);
+ok("adres sonundaki yasal sirket kuyrugu company alanina tasinir", /KALEKALIP Makina ve Kalip Sanayi A\.\u015e\./.test(kalekalip.company));
+ok("sirket kuyrugu adresten temizlenir", !/KALEKALIP/i.test(kalekalip.address));
+ok("istanbul ascii-fold ile sehir olarak yakalanir", kalekalip.city === "\u0130stanbul");
+
+const ostimLogoNoiseLike: OcrBox[] = [
+  ...line(["C\u00d6STIM"], 90, 80, 58, 0.89),
+  ...line(["OSTIM", "DEFENSE", "AND", "AVIATION"], 90, 175, 28, 0.98),
+  ...line(["sebnem.nacioglu@ostim.org.tr"], 90, 260, 22, 0.99),
+  ...line(["www.ostimsavunma.org"], 90, 300, 22, 0.99),
+];
+const ostimLogoNoise = validateAndScore(runCard(ostimLogoNoiseLike).card);
+ok("tek harf domain artigi uzun sirket satirini ezmez", ostimLogoNoise.company === "OSTIM DEFENSE AND AVIATION");
+
+const splitSurnameWithEmailLike: OcrBox[] = [
+  ...line(["sebnem.nacioglu@ostim.org.tr"], 80, 180, 22, 0.99),
+  ...line(["+90", "312", "354", "58", "98", "NACIOGLU"], 80, 260, 24, 0.98),
+  ...line(["+90", "312", "385", "50", "90", "Sebnem", "Cigdem"], 80, 315, 24, 0.98),
+  ...line(["Project", "Manager"], 80, 370, 24, 0.98),
+  ...line(["OSTIM", "DEFENSE", "AND", "AVIATION"], 80, 430, 26, 0.98),
+];
+const splitSurnameWithEmail = validateAndScore(runCard(splitSurnameWithEmailLike).card);
+ok("email local-part destekliyse ayrik soyad isimle birlestirilir", splitSurnameWithEmail.full_name === "Sebnem Cigdem NACIOGLU");
 
 const fh = (name: string, value: string, conf = 0.9): FieldHit =>
   ({ field_name: name as any, value, confidence: conf, bbox: { x: 0, y: 0, width: 0, height: 0 }, source: "ocr", valid: true });

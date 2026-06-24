@@ -8,7 +8,7 @@
 import type { LayoutModel, LayoutLine, FieldHit } from "../schema";
 import { ADDRESS_KEYWORDS, TR_PROVINCES, TR_DISTRICTS, COUNTRY_TOKENS } from "../config/dictionaries";
 import { toPercentBox } from "../layout/reconstruct";
-import { makeHit, lineBox } from "./util";
+import { asciiFold, makeHit, lineBox } from "./util";
 
 const POSTAL = /\b\d{5}\b/;
 const LEADING_PHONE_CHUNK = /^(?:\s*(?:t|tel|telefon|phone|m|gsm|mob|mobile)\.?\s*:?\s*\+?\d[\d\s().-]{7,}\s*)+/i;
@@ -18,6 +18,16 @@ function isAddressLine(line: LayoutLine): boolean {
   if (ADDRESS_KEYWORDS.some((k) => lower.includes(k.toLowerCase()))) return true;
   if (POSTAL.test(line.text) && TR_PROVINCES.some((p) => new RegExp(`\\b${p}\\b`, "i").test(line.text))) return true;
   return false;
+}
+
+function provinceRegex(province: string): RegExp {
+  return new RegExp(`\\b${province}\\b`, "i");
+}
+
+function foldedContainsProvince(text: string, province: string): boolean {
+  const foldedText = asciiFold(text).toLowerCase();
+  const foldedProvince = asciiFold(province).toLowerCase();
+  return new RegExp(`\\b${foldedProvince}\\b`, "i").test(foldedText);
 }
 
 export function extractAddress(m: LayoutModel): FieldHit[] {
@@ -42,9 +52,9 @@ export function extractAddress(m: LayoutModel): FieldHit[] {
   }
 
   // Şehir: önce il, yoksa ilçe→il bağlamı (ilçe varsa düşük güvenle şehir ipucu)
-  const province = TR_PROVINCES.find((p) => new RegExp(`\\b${p}\\b`, "i").test(flat));
+  const province = TR_PROVINCES.find((p) => provinceRegex(p).test(flat) || foldedContainsProvince(flat, p));
   if (province) {
-    const line = m.lines.find((l) => new RegExp(`\\b${province}\\b`, "i").test(l.text));
+    const line = m.lines.find((l) => provinceRegex(province).test(l.text) || foldedContainsProvince(l.text, province));
     hits.push(makeHit("city", province, 0.8, line ? lineBox(line, m) : { x: 0, y: 0, width: 0, height: 0 }, "city:province"));
   } else {
     const district = TR_DISTRICTS.find((d) => new RegExp(`\\b${d}\\b`, "i").test(flat));

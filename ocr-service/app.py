@@ -48,6 +48,64 @@ def _exif_orientation(raw: bytes):
         return None
 
 
+def _ocr_quality(boxes: list) -> float:
+    score = 0.0
+    for box in boxes or []:
+        text = str(box.get("text", "")).strip()
+        if not text:
+            continue
+        alnum = sum(1 for ch in text if ch.isalnum())
+        score += max(1, alnum) * float(box.get("confidence", 0.0))
+    return score
+
+
+def _should_try_raw_exif_fallback(boxes: list) -> bool:
+    text = " ".join(str(box.get("text", "")) for box in boxes or [])
+    if len(boxes or []) < 8:
+        return True
+    if "@" not in text:
+        return True
+    if _ocr_quality(boxes) < 70:
+        return True
+    return False
+
+
+def _map_point_for_exif(x: float, y: float, orientation, raw_w: int, raw_h: int):
+    # Match preprocess.correct_exif(): transform raw pixel coords into EXIF-corrected coords.
+    if orientation == 3:
+        return raw_w - x, raw_h - y
+    if orientation == 6:
+        return raw_h - y, x
+    if orientation == 8:
+        return y, raw_w - x
+    if orientation == 2:
+        return raw_w - x, y
+    if orientation == 4:
+        return x, raw_h - y
+    return x, y
+
+
+def _boxes_to_exif_ref(boxes: list, orientation, raw_w: int, raw_h: int) -> list:
+    if not orientation or orientation == 1:
+        return boxes
+    out = []
+    for item in boxes:
+        b = item.get("bbox") or {}
+        pts = [
+            _map_point_for_exif(float(b.get("x0", 0)), float(b.get("y0", 0)), orientation, raw_w, raw_h),
+            _map_point_for_exif(float(b.get("x1", 0)), float(b.get("y0", 0)), orientation, raw_w, raw_h),
+            _map_point_for_exif(float(b.get("x1", 0)), float(b.get("y1", 0)), orientation, raw_w, raw_h),
+            _map_point_for_exif(float(b.get("x0", 0)), float(b.get("y1", 0)), orientation, raw_w, raw_h),
+        ]
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        out.append({
+            **item,
+            "bbox": {"x0": min(xs), "y0": min(ys), "x1": max(xs), "y1": max(ys)},
+        })
+    return out
+
+
 @app.on_event("startup")
 def _preload():
     # Modeli açılışta yükle (ilk istek hızlı olsun). Hata olsa da servis ayakta kalır.
@@ -107,6 +165,21 @@ def ocr(req: OcrRequest):
     boxes = []
     try:
         boxes = ocr_engine.run_ocr(pre.image, pre.M)
+        if (
+            exif and exif != 1 and
+            os.getenv("RAPIDOCR_EXIF_FALLBACK", "true").lower() == "true" and
+            _should_try_raw_exif_fallback(boxes)
+        ):
+            tr = time.time()
+            raw_pre = pp.preprocess(bgr, None)
+            raw_boxes = ocr_engine.run_ocr(raw_pre.image, raw_pre.M)
+            raw_boxes = _boxes_to_exif_ref(raw_boxes, exif, raw_pre.ref_w, raw_pre.ref_h)
+            timings["ocr_raw_exif_fallback_ms"] = int((time.time() - tr) * 1000)
+            if _ocr_quality(raw_boxes) > _ocr_quality(boxes) * 1.08:
+                boxes = raw_boxes
+                timings["ocr_variant"] = "raw-pixels"
+            else:
+                timings["ocr_variant"] = "exif-corrected"
     except Exception as e:
         warnings.append(f"OCR motoru çalıştırılamadı: {e}. RapidOCR kurulu mu / model yolu doğru mu?")
     timings["ocr_ms"] = int((time.time() - to) * 1000)

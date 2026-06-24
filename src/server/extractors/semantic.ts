@@ -33,6 +33,7 @@ const NON_PERSON_WORDS = [
   "project", "development", "electronic", "electronics", "sales", "satis", "satıs",
   "manager", "director", "chief", "deputy", "chairman", "board", "naval", "architecture",
   "logistics", "forces", "force", "command", "commad", "congressium", "kurulu",
+  "domestic", "purchasing", "procurement", "buyer", "yonetim", "baskan", "baskani",
 ];
 
 /** TAM sözcük (sınırlı) — kısa eklerin kelime içinde yanlış eşleşmesini önler. */
@@ -55,8 +56,10 @@ function hasTitleAbbrev(text: string): boolean {
 export function titleScore(line: LayoutLine, m: LayoutModel): Score {
   const text = line.text.trim();
   const lower = trLower(text);
+  const folded = asciiFold(lower);
   const signals: Record<string, number> = {};
   if (EMAIL_OR_URL.test(text)) return { score: 0, signals };
+  if (/\b(muhendislik|engineering)\b/.test(folded)) return { score: 0, signals };
   let score = 0;
   if (hasTitleKw(lower)) { score += 0.6; signals.keyword = 1; }
   if (hasTitleAbbrev(text)) { score += 0.5; signals.abbrev = 1; }
@@ -88,7 +91,14 @@ export function companyScore(line: LayoutLine, m: LayoutModel, emailDomainCore?:
 
   if (anyWord(lower, COMPANY_LEGAL_SUFFIXES)) { score += 0.45; signals.legal = 1; }
   if (anyStem(lower, COMPANY_SECTOR_WORDS)) { score += 0.2; signals.sector = 1; }
-  if (anyWord(lower, INSTITUTION_WORDS)) { score += 0.22; signals.institution = 1; }
+  if (anyWord(lower, INSTITUTION_WORDS)) {
+    score += 0.34;
+    signals.institution = 1;
+    if (text.split(/\s+/).filter(Boolean).length >= 2) {
+      score += 0.12;
+      signals.institutionPhrase = 1;
+    }
+  }
 
   // E-POSTA DOMAİNİYLE EŞLEŞME — çok güçlü sinyal
   if (emailDomainCore && domainMatchesCompany(text, emailDomainCore)) {
@@ -117,7 +127,9 @@ export function domainMatchesCompany(company: string, domainCore: string): boole
   const condensed = asciiFold(company).replace(/[^a-z0-9]/g, "");
   const core = asciiFold(domainCore).replace(/[^a-z0-9]/g, "");
   if (!condensed || core.length < 3) return false;
-  if (condensed.includes(core) || core.includes(condensed)) return true;
+  if (condensed === core) return true;
+  if (condensed.includes(core)) return condensed.length - core.length >= 2;
+  if (core.includes(condensed)) return true;
   // İlk anlamlı şirket token'ı domain çekirdeğinde mi?
   const firstTok = asciiFold(company).split(/\s+/).map((t) => t.replace(/[^a-z0-9]/g, "")).find((t) => t.length >= 3);
   return !!firstTok && core.includes(firstTok);
@@ -139,6 +151,10 @@ export function nameScore(line: LayoutLine, m: LayoutModel): Score {
   if (words.length < THRESHOLDS.nameMinWords || words.length > THRESHOLDS.nameMaxWords) {
     return { score: 0, signals };
   }
+  const foldedTokens = words.map((w) => asciiFold(w).replace(/[^a-z]/g, ""));
+  if (foldedTokens.every((token) => token.length <= 1) || !foldedTokens.some((token) => token.length >= 3)) {
+    return { score: 0, signals };
+  }
   let score = 0;
   const capWords = words.filter((w) => isCapWord(w) || isMostlyCaps(w));
   const capRatio = capWords.length / words.length;
@@ -149,7 +165,6 @@ export function nameScore(line: LayoutLine, m: LayoutModel): Score {
   if (fontRatio(line, m) >= THRESHOLDS.largeFontRatio) { score += 0.12; signals.bigFont = 1; }
 
   const tokens = words.map((w) => trLower(w).replace(/[^a-zğüşıöç]/gi, ""));
-  const foldedTokens = words.map((w) => asciiFold(w).replace(/[^a-z]/g, ""));
   if (foldedTokens.some((token) => NON_PERSON_WORDS.includes(token))) {
     return { score: 0, signals };
   }
